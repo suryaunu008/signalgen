@@ -29,6 +29,7 @@ Typical Usage:
 import asyncio
 import logging
 import threading
+import time
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
@@ -580,7 +581,7 @@ class SignalGenApp:
                 raise HTTPException(status_code=500, detail="Internal server error")
         
         @self.app.post("/api/engine/start")
-        async def start_engine(engine_config: EngineStart):
+        async def start_engine(engine_config: EngineStart, background_tasks: BackgroundTasks):
             """Start the scalping engine."""
             with self._engine_lock:
                 try:
@@ -615,6 +616,10 @@ class SignalGenApp:
                     )
                     engine_thread.start()
                     
+                    # Broadcast will happen after engine fully starts
+                    # We'll do it in a background task after a short delay
+                    background_tasks.add_task(self._broadcast_engine_status_after_start)
+                    
                     return {"message": "Engine start initiated"}
                 except HTTPException:
                     raise
@@ -626,29 +631,51 @@ class SignalGenApp:
                     )
         
         @self.app.post("/api/engine/stop")
-        async def stop_engine():
+        def stop_engine():
             """Stop the scalping engine."""
-            with self._engine_lock:
-                try:
-                    if not self._engine_running:
-                        raise HTTPException(
-                            status_code=status.HTTP_409_CONFLICT,
-                            detail="Engine is not running"
-                        )
-                    
-                    await self.scalping_engine.stop_engine()
-                    self._engine_running = False
-                    self._engine_start_time = None
-                    
-                    return {"message": "Engine stopped successfully"}
-                except HTTPException:
-                    raise
-                except Exception as e:
-                    self.logger.error(f"Error stopping engine: {e}")
+            try:
+                if not self._engine_running:
                     raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail="Internal server error"
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Engine is not running"
                     )
+                
+                # Stop engine in background thread
+                def stop_and_broadcast():
+                    try:
+                        self._stop_engine_in_thread()
+                        time.sleep(0.5)
+                        
+                        # Build stopped status dict
+                        stopped_status = {
+                            'is_running': False,
+                            'is_connected': False,
+                            'ibkr_connected': False,
+                            'state': {'state': 'stopped'},
+                            'active_watchlist': [],
+                            'active_rule': None,
+                            'subscribed_symbols': [],
+                            'reconnect_enabled': False,
+                            'reconnect_attempts': 0,
+                            'connection_details': {}
+                        }
+                        
+                        self.broadcaster.broadcast_engine_status_sync(stopped_status)
+                        self.logger.info("Broadcasted stopped status")
+                    except Exception as e:
+                        self.logger.error(f"Error in stop thread: {e}")
+                
+                threading.Thread(target=stop_and_broadcast, daemon=True).start()
+                
+                return {"message": "Engine stop initiated"}
+            except HTTPException:
+                raise
+            except Exception as e:
+                self.logger.error(f"Error stopping engine: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error"
+                )
         
         # Signals endpoints
         @self.app.get("/api/signals", response_model=List[SignalResponse])
@@ -759,6 +786,36 @@ class SignalGenApp:
         finally:
             loop.close()
     
+    def _stop_engine_in_thread(self) -> None:
+        """
+        Stop engine in separate thread with its own event loop.
+        This is needed for ib_insync which requires an event loop.
+        """
+        # Create new event loop for this thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+            # Run the async stop method in this thread's loop
+            loop.run_until_complete(self._stop_engine_async())
+        except Exception as e:
+            self.logger.error(f"Error in stop engine thread: {e}")
+        finally:
+            loop.close()
+    
+    async def _stop_engine_async(self) -> None:
+        """Async method to stop the engine."""
+        try:
+            await self.scalping_engine.stop_engine()
+            
+            with self._engine_lock:
+                self._engine_running = False
+                self._engine_start_time = None
+            
+            self.logger.info("Engine stopped successfully")
+        except Exception as e:
+            self.logger.error(f"Error stopping engine: {e}")
+    
     async def _start_engine_async(self, symbols: List[str], rule_id: int) -> None:
         """
         Async method to start the engine.
@@ -773,18 +830,13 @@ class SignalGenApp:
                 self._engine_start_time = datetime.utcnow()
                 
             success = await self.scalping_engine.start_engine(symbols, rule_id)
+            self.logger.info(f"Engine start_engine returned: {success}")
+            
             if success:
                 self.logger.info(f"Engine started successfully with {len(symbols)} symbols")
-                
-                # Broadcast engine status (simplified - just log for now)
-                try:
-                    status = await self.scalping_engine.get_engine_status()
-                    self.logger.info(f"Engine status after start: {status}")
-                    # Note: WebSocket broadcast from different thread/loop is complex
-                    # Frontend will poll /api/engine/status instead
-                except Exception as e:
-                    self.logger.warning(f"Could not get engine status for broadcast: {e}")
+                # Broadcast will be handled by background task, not here
             else:
+                self.logger.warning("Engine start failed!")
                 with self._engine_lock:
                     self._engine_running = False
                     self._engine_start_time = None
@@ -802,6 +854,35 @@ class SignalGenApp:
                 })
             except Exception:
                 pass  # Ignore broadcast errors
+    
+    async def _broadcast_engine_status_after_start(self) -> None:
+        """Background task to broadcast engine status after startup delay."""
+        import asyncio
+        # Wait for engine to fully initialize
+        await asyncio.sleep(0.5)
+        
+        try:
+            self.logger.info("Broadcasting engine status after start...")
+            
+            # Build status manually to avoid blocking calls
+            status = {
+                'is_running': self._engine_running,
+                'is_connected': self.scalping_engine.is_connected,
+                'ibkr_connected': self.scalping_engine.is_connected,
+                'state': {'state': 'running' if self._engine_running else 'stopped'},
+                'active_watchlist': self.scalping_engine.active_watchlist.copy() if hasattr(self.scalping_engine, 'active_watchlist') else [],
+                'active_rule': self.scalping_engine.active_rule if hasattr(self.scalping_engine, 'active_rule') else None,
+                'subscribed_symbols': list(self.scalping_engine.subscribed_contracts.keys()) if hasattr(self.scalping_engine, 'subscribed_contracts') else [],
+                'reconnect_enabled': True,
+                'reconnect_attempts': 0,
+                'connection_details': {}
+            }
+            
+            self.logger.info(f"Got status: running={status.get('is_running')}, connected={status.get('is_connected')}")
+            self.broadcaster.broadcast_engine_status_sync(status)
+            self.logger.info("Broadcast completed")
+        except Exception as e:
+            self.logger.error(f"Error broadcasting engine status: {e}", exc_info=True)
     
     async def _get_safe_engine_status(self) -> Dict[str, Any]:
         """

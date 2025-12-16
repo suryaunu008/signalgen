@@ -29,6 +29,7 @@ Typical Usage:
 
 import asyncio
 import logging
+import random
 import time
 from typing import Dict, List, Optional, Callable
 from ib_insync import IB, Stock, BarDataList, BarData, Contract
@@ -55,12 +56,13 @@ class ScalpingEngine:
         Args:
             ib_host: IBKR TWS/Gateway host address
             ib_port: IBKR TWS/Gateway port (7497 for TWS, 4002 for Gateway)
-            ib_client_id: Client ID for IBKR connection
+            ib_client_id: Client ID for IBKR connection (will be overridden with random ID)
         """
         self.ib = IB()
         self.ib_host = ib_host
         self.ib_port = ib_port
-        self.ib_client_id = ib_client_id
+        # Use random client ID to avoid conflicts on reconnect
+        self.ib_client_id = None  # Will be set on each connect
         
         self.rule_engine = RuleEngine()
         self.indicator_engine = IndicatorEngine()
@@ -77,6 +79,7 @@ class ScalpingEngine:
         # IBKR subscription tracking
         self.subscribed_contracts: Dict[str, Contract] = {}  # symbol -> contract mapping
         self.contract_symbol_map: Dict[int, str] = {}  # contract conId -> symbol mapping
+        self.real_time_bars: Dict[str, object] = {}  # symbol -> RealTimeBars object mapping
         
         # Reconnection settings
         self.reconnect_enabled = True
@@ -97,36 +100,46 @@ class ScalpingEngine:
             bool: True if connection successful, False otherwise
         """
         try:
-            self.logger.info(f"Connecting to IBKR at {self.ib_host}:{self.ib_port} with client ID {self.ib_client_id}")
-            await self.ib.connectAsync(self.ib_host, self.ib_port, clientId=self.ib_client_id)
-            
+            # Ensure not already connected
             if self.ib.isConnected():
-                self.is_connected = True
-                self.reconnect_attempts = 0
-                self.logger.info(f"Successfully connected to IBKR at {self.ib_host}:{self.ib_port}")
-                
-                # Set up connection event handlers
-                self.ib.disconnectedEvent += self._on_disconnected
-                self.ib.errorEvent += self._on_error
-                
                 return True
-            else:
-                self.logger.error("Connection to IBKR failed - not connected after connectAsync")
-                return False
+            
+            # Create fresh IB instance to avoid any client ID conflicts
+            # This is critical - reusing old instance can cause TWS to reject connection
+            self.ib = IB()
+            self.ib.autoReconnect = False
+            
+            # Generate random client ID to avoid conflicts
+            self.ib_client_id = random.randint(1000, 9999)
+            
+            self.logger.info(f"Connecting to IBKR at {self.ib_host}:{self.ib_port} with client ID {self.ib_client_id}")
+            await self.ib.connectAsync(self.ib_host, self.ib_port, clientId=self.ib_client_id, timeout=10)
+            
+            # IMPORTANT: Update is_connected after successful connection
+            self.is_connected = True
+            self.reconnect_attempts = 0
+            self.logger.info(f"Successfully connected to IBKR at {self.ib_host}:{self.ib_port}")
+            
+            # Set up connection event handlers
+            self.ib.disconnectedEvent += self._on_disconnected
+            self.ib.errorEvent += self._on_error
+            
+            return True
                 
         except Exception as e:
             self.logger.error(f"Failed to connect to IBKR: {e}")
             self.is_connected = False
             return False
     
-    async def _on_disconnected(self) -> None:
+    def _on_disconnected(self) -> None:
         """Handle IBKR disconnection event."""
         self.is_connected = False
-        self.logger.warning("Disconnected from IBKR")
+        self.logger.info("Disconnected from IBKR")
         
         if self.reconnect_enabled and self.is_running:
             self.logger.info("Attempting to reconnect to IBKR...")
-            await self._reconnect_to_ibkr()
+            # Schedule reconnection in the event loop
+            asyncio.ensure_future(self._reconnect_to_ibkr())
     
     def _on_error(self, reqId, errorCode, errorString, contract) -> None:
         """Handle IBKR error events."""
@@ -164,9 +177,55 @@ class ScalpingEngine:
         self.reconnect_enabled = False  # Disable reconnection during shutdown
         
         if self.ib.isConnected():
-            self.ib.disconnect()
-            self.is_connected = False
-            self.logger.info("Disconnected from IBKR")
+            try:
+                # Remove bar update handler if registered
+                if hasattr(self, '_bar_handler_registered') and self._bar_handler_registered:
+                    try:
+                        self.ib.barUpdateEvent -= self._on_bar_update
+                        self._bar_handler_registered = False
+                    except Exception:
+                        pass
+                
+                # Remove connection event handlers before disconnect
+                try:
+                    self.ib.disconnectedEvent -= self._on_disconnected
+                    self.ib.errorEvent -= self._on_error
+                except Exception:
+                    pass
+                
+                # Disable auto-reconnect to prevent silent reconnection
+                self.ib.autoReconnect = False
+                
+                # Disconnect from TWS/Gateway
+                self.ib.disconnect()
+                self.logger.info("Sent disconnect command to IBKR")
+                
+                # Short delay to ensure clean disconnect
+                await asyncio.sleep(1.0)
+            except Exception as e:
+                self.logger.error(f"Error during disconnect: {e}")
+            
+        self.is_connected = False
+        self.logger.info("Disconnected from IBKR")
+        
+        # Broadcast disconnection status update
+        try:
+            status = {
+                'is_running': self.is_running,
+                'is_connected': False,
+                'ibkr_connected': False,
+                'state': {'state': 'running' if self.is_running else 'stopped'},
+                'active_watchlist': self.active_watchlist.copy(),
+                'active_rule': self.active_rule,
+                'subscribed_symbols': [],
+                'reconnect_enabled': self.reconnect_enabled,
+                'reconnect_attempts': self.reconnect_attempts,
+                'connection_details': {}
+            }
+            self.broadcaster.broadcast_engine_status_sync(status)
+            self.logger.info("Broadcasted IBKR disconnected status")
+        except Exception as e:
+            self.logger.error(f"Error broadcasting IBKR disconnection status: {e}")
     
     async def start(self) -> bool:
         """
@@ -189,6 +248,25 @@ class ScalpingEngine:
         
         self.is_running = True
         self.reconnect_enabled = True
+        
+        # Broadcast IBKR connected status after is_running is set
+        try:
+            status = {
+                'is_running': True,
+                'is_connected': True,
+                'ibkr_connected': True,
+                'state': {'state': 'running'},
+                'active_watchlist': self.active_watchlist.copy(),
+                'active_rule': self.active_rule,
+                'subscribed_symbols': list(self.subscribed_contracts.keys()),
+                'reconnect_enabled': self.reconnect_enabled,
+                'reconnect_attempts': self.reconnect_attempts,
+                'connection_details': {'host': self.ib_host, 'port': self.ib_port, 'client_id': self.ib_client_id}
+            }
+            self.broadcaster.broadcast_engine_status_sync(status)
+            self.logger.info("Broadcasted engine running + IBKR connected status")
+        except Exception as e:
+            self.logger.error(f"Error broadcasting status after start: {e}")
         
         self.logger.info("Scalping engine started successfully")
         return True
@@ -252,14 +330,15 @@ class ScalpingEngine:
                     self.subscribed_contracts[symbol] = contract
                     self.contract_symbol_map[contract.conId] = symbol
                     
-                    # Request real-time 5-second bars
-                    self.ib.reqRealTimeBars(
+                    # Request real-time 5-second bars and store the RealTimeBars object
+                    bars = self.ib.reqRealTimeBars(
                         contract,
                         5,  # 5-second bars
                         'MIDPOINT',
                         False,  # Regular trading hours only
                         []
                     )
+                    self.real_time_bars[symbol] = bars
                     
                     self.active_watchlist.append(symbol)
                     self.logger.info(f"Subscribed to real-time data for {symbol}")
@@ -285,13 +364,21 @@ class ScalpingEngine:
                 if symbol in self.subscribed_contracts:
                     contract = self.subscribed_contracts[symbol]
                     
-                    # Cancel real-time bars
-                    self.ib.cancelRealTimeBars(contract)
+                    # Cancel real-time bars subscription using stored RealTimeBars object
+                    if self.ib.isConnected() and symbol in self.real_time_bars:
+                        try:
+                            bars = self.real_time_bars[symbol]
+                            self.ib.cancelRealTimeBars(bars)
+                            self.logger.info(f"Cancelled real-time bars for {symbol}")
+                        except Exception as e:
+                            self.logger.error(f"Error canceling bars for {symbol}: {e}")
                     
-                    # Clean up mappings
+                    # Now safe to clean up mappings
                     del self.subscribed_contracts[symbol]
                     if contract.conId in self.contract_symbol_map:
                         del self.contract_symbol_map[contract.conId]
+                    if symbol in self.real_time_bars:
+                        del self.real_time_bars[symbol]
                     
                     # Remove from active watchlist
                     if symbol in self.active_watchlist:
@@ -505,23 +592,39 @@ class ScalpingEngine:
         Returns:
             Dict: Engine status information
         """
-        return {
-            'is_running': self.is_running,
-            'is_connected': self.is_connected,
-            'ibkr_connected': self.is_connected,
-            'state': self.state_machine.get_state_info(),
-            'active_watchlist': self.active_watchlist.copy(),
-            'active_rule': self.active_rule,
-            'subscribed_symbols': list(self.subscribed_contracts.keys()),
-            'reconnect_enabled': self.reconnect_enabled,
-            'reconnect_attempts': self.reconnect_attempts,
-            'connection_details': {
-                'host': self.ib_host,
-                'port': self.ib_port,
-                'client_id': self.ib_client_id
-            },
-            'indicator_engine_status': self.indicator_engine.get_engine_status()
-        }
+        try:
+            return {
+                'is_running': self.is_running,
+                'is_connected': self.is_connected,
+                'ibkr_connected': self.is_connected,
+                'state': self.state_machine.get_state_info(),
+                'active_watchlist': self.active_watchlist.copy(),
+                'active_rule': self.active_rule,
+                'subscribed_symbols': list(self.subscribed_contracts.keys()),
+                'reconnect_enabled': self.reconnect_enabled,
+                'reconnect_attempts': self.reconnect_attempts,
+                'connection_details': {
+                    'host': self.ib_host,
+                    'port': self.ib_port,
+                    'client_id': self.ib_client_id
+                },
+                'indicator_engine_status': {}  # Skip for now to avoid blocking
+            }
+        except Exception as e:
+            self.logger.error(f"Error getting engine status sync: {e}", exc_info=True)
+            return {
+                'is_running': False,
+                'is_connected': False,
+                'ibkr_connected': False,
+                'state': {},
+                'active_watchlist': [],
+                'active_rule': None,
+                'subscribed_symbols': [],
+                'reconnect_enabled': False,
+                'reconnect_attempts': 0,
+                'connection_details': {},
+                'indicator_engine_status': {}
+            }
     
     def get_active_symbols(self) -> List[str]:
         """

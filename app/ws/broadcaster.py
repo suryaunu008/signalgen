@@ -80,6 +80,9 @@ class SocketIOBroadcaster:
             'errors': 'errors'
         }
         
+        # Event loop reference for thread-safe broadcasting
+        self._loop = None
+        
         # Register event handlers
         self._register_handlers()
         
@@ -281,6 +284,59 @@ class SocketIOBroadcaster:
                 'message': f'Failed to broadcast engine status: {str(e)}',
                 'data': status
             })
+    
+    def broadcast_engine_status_sync(self, status: Dict[str, Any]) -> None:
+        """
+        Thread-safe synchronous version of broadcast_engine_status.
+        Can be called from any thread.
+        
+        Args:
+            status: Engine status data
+        """
+        try:
+            self.logger.info(f"broadcast_engine_status_sync called with: {status.get('is_running', 'N/A')}")
+            
+            # Use threading to call emit in a thread-safe way
+            import threading
+            def do_emit():
+                try:
+                    # Get the Socket.IO async server's loop
+                    import asyncio
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            asyncio.run_coroutine_threadsafe(
+                                self._emit_engine_status(status),
+                                loop
+                            )
+                            self.logger.info("Scheduled emit in running loop")
+                        else:
+                            # Create a new loop and run the coroutine
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            loop.run_until_complete(self._emit_engine_status(status))
+                            loop.close()
+                            self.logger.info("Emitted in new loop")
+                    except RuntimeError:
+                        # No event loop in current thread, create one
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(self._emit_engine_status(status))
+                        loop.close()
+                        self.logger.info("Emitted in new loop (no existing loop)")
+                except Exception as e:
+                    self.logger.error(f"Error emitting in thread: {e}", exc_info=True)
+            
+            threading.Thread(target=do_emit, daemon=True).start()
+            
+        except Exception as e:
+            self.logger.error(f"Error in sync broadcast: {e}", exc_info=True)
+    
+    async def _emit_engine_status(self, status: Dict[str, Any]) -> None:
+        """Helper to emit engine status."""
+        self.logger.info(f"_emit_engine_status called, emitting to room: {self.ROOMS['engine']}")
+        await self.sio.emit('engine_status', status, room=self.ROOMS['engine'])
+        self.logger.info("Engine status emitted successfully")
     
     async def broadcast_watchlist_update(self, watchlist: Dict[str, Any]) -> None:
         """

@@ -54,9 +54,6 @@ class SignalGenApp {
       // Load initial data
       await this.loadInitialData();
 
-      // Start polling engine status every 2 seconds
-      this.startStatusPolling();
-
       // Hide loading state
       this.hideLoading();
 
@@ -192,6 +189,7 @@ class SignalGenApp {
     });
 
     WS.on("engine_status", (status) => {
+      console.log("Received engine_status via WebSocket:", status);
       this.updateEngineStatus(status);
     });
 
@@ -242,8 +240,10 @@ class SignalGenApp {
   async pollEngineStatus() {
     try {
       const status = await API.getEngineStatus();
+      console.log("Polled engine status:", status); // Debug log
       this.updateEngineStatus(status);
     } catch (error) {
+      console.error("Error polling engine status:", error); // Debug log
       // Silently fail - don't spam console/UI on polling errors
     }
   }
@@ -299,6 +299,18 @@ class SignalGenApp {
     } else {
       ibkrIndicator.className = "w-3 h-3 bg-red-500 rounded-full animate-pulse";
       ibkrText.textContent = "IBKR: Disconnected";
+    }
+
+    // Update client ID display if connected
+    const clientIdField = document.getElementById("ib-client-id");
+    if (
+      clientIdField &&
+      status.connection_details &&
+      status.connection_details.client_id
+    ) {
+      clientIdField.value = `Client ID: ${status.connection_details.client_id}`;
+    } else if (clientIdField) {
+      clientIdField.value = "Auto (random)";
     }
 
     // Update control buttons
@@ -530,8 +542,7 @@ class SignalGenApp {
       document.getElementById("ib-host").value = settings.ib_host;
     if (settings.ib_port)
       document.getElementById("ib-port").value = settings.ib_port;
-    if (settings.ib_client_id)
-      document.getElementById("ib-client-id").value = settings.ib_client_id;
+    // Client ID is auto-generated, don't populate from settings
   }
 
   /**
@@ -935,7 +946,7 @@ class SignalGenApp {
       const settings = {
         ib_host: document.getElementById("ib-host").value,
         ib_port: parseInt(document.getElementById("ib-port").value),
-        ib_client_id: parseInt(document.getElementById("ib-client-id").value),
+        // Client ID is auto-generated on each connection, not configurable
       };
 
       this.showLoading();
