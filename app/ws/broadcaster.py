@@ -57,7 +57,7 @@ class SocketIOBroadcaster:
         
         # Default CORS origins for local development
         if cors_origins is None:
-            cors_origins = ["http://localhost:8000", "http://127.0.0.1:8000"]
+            cors_origins = ["http://localhost:3456", "http://127.0.0.1:3456"]
         
         # Create async Socket.IO server
         self.sio = AsyncServer(

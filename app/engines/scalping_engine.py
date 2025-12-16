@@ -164,7 +164,7 @@ class ScalpingEngine:
         self.reconnect_enabled = False  # Disable reconnection during shutdown
         
         if self.ib.isConnected():
-            await self.ib.disconnectAsync()
+            self.ib.disconnect()
             self.is_connected = False
             self.logger.info("Disconnected from IBKR")
     
@@ -242,7 +242,7 @@ class ScalpingEngine:
             
             # Set up bar update event handler if not already set
             if not hasattr(self, '_bar_handler_registered'):
-                self.ib.realtimeBarEvent += self._on_bar_update
+                self.ib.barUpdateEvent += self._on_bar_update
                 self._bar_handler_registered = True
             
             # Subscribe to real-time bars for each symbol
@@ -483,6 +483,32 @@ class ScalpingEngine:
         return {
             'is_running': self.is_running,
             'is_connected': self.is_connected,
+            'ibkr_connected': self.is_connected,  # Add field for EngineStatus model compatibility
+            'state': self.state_machine.get_state_info(),
+            'active_watchlist': self.active_watchlist.copy(),
+            'active_rule': self.active_rule,
+            'subscribed_symbols': list(self.subscribed_contracts.keys()),
+            'reconnect_enabled': self.reconnect_enabled,
+            'reconnect_attempts': self.reconnect_attempts,
+            'connection_details': {
+                'host': self.ib_host,
+                'port': self.ib_port,
+                'client_id': self.ib_client_id
+            },
+            'indicator_engine_status': self.indicator_engine.get_engine_status()
+        }
+    
+    def get_engine_status_sync(self) -> Dict:
+        """
+        Synchronous version of get_engine_status for non-async contexts.
+        
+        Returns:
+            Dict: Engine status information
+        """
+        return {
+            'is_running': self.is_running,
+            'is_connected': self.is_connected,
+            'ibkr_connected': self.is_connected,
             'state': self.state_machine.get_state_info(),
             'active_watchlist': self.active_watchlist.copy(),
             'active_rule': self.active_rule,
@@ -540,7 +566,7 @@ class ScalpingEngine:
         
         # Disconnect first
         if self.ib.isConnected():
-            await self.ib.disconnectAsync()
+            self.ib.disconnect()
             self.is_connected = False
         
         # Reconnect

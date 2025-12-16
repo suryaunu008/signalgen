@@ -111,7 +111,7 @@ Rules are defined using logical conditions with technical indicators:
 
 ## API Documentation
 
-Once running, the API is available at `http://localhost:8000/docs`
+Once running, the API is available at `http://localhost:3456/docs`
 
 ### Key Endpoints
 

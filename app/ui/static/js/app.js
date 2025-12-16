@@ -13,12 +13,14 @@ class SignalGenApp {
     this.watchlistSymbols = [];
     this.signals = [];
     this.maxSignals = 50; // Keep only last 50 signals in UI
+    this.statusPollInterval = null; // For polling engine status
 
     // Bind methods to maintain context
     this.init = this.init.bind(this);
     this.loadInitialData = this.loadInitialData.bind(this);
     this.setupEventListeners = this.setupEventListeners.bind(this);
     this.setupWebSocketListeners = this.setupWebSocketListeners.bind(this);
+    this.pollEngineStatus = this.pollEngineStatus.bind(this);
 
     // Component methods
     this.updateEngineStatus = this.updateEngineStatus.bind(this);
@@ -51,6 +53,9 @@ class SignalGenApp {
 
       // Load initial data
       await this.loadInitialData();
+
+      // Start polling engine status every 2 seconds
+      this.startStatusPolling();
 
       // Hide loading state
       this.hideLoading();
@@ -201,6 +206,46 @@ class SignalGenApp {
     WS.on("error", (error) => {
       this.showToast(error.message || "An error occurred", "error");
     });
+  }
+
+  /**
+   * Start polling engine status
+   */
+  startStatusPolling() {
+    // Clear any existing interval
+    if (this.statusPollInterval) {
+      clearInterval(this.statusPollInterval);
+    }
+
+    // Poll every 2 seconds
+    this.statusPollInterval = setInterval(() => {
+      this.pollEngineStatus();
+    }, 2000);
+
+    console.log("Started engine status polling");
+  }
+
+  /**
+   * Stop polling engine status
+   */
+  stopStatusPolling() {
+    if (this.statusPollInterval) {
+      clearInterval(this.statusPollInterval);
+      this.statusPollInterval = null;
+      console.log("Stopped engine status polling");
+    }
+  }
+
+  /**
+   * Poll engine status from API
+   */
+  async pollEngineStatus() {
+    try {
+      const status = await API.getEngineStatus();
+      this.updateEngineStatus(status);
+    } catch (error) {
+      // Silently fail - don't spam console/UI on polling errors
+    }
   }
 
   /**

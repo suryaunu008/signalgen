@@ -21,7 +21,7 @@ Application Flow:
 
 MVP Configuration:
 - Single desktop window application
-- Local FastAPI server on localhost:8000
+- Local FastAPI server on localhost:3456
 - Local Socket.IO server on localhost:8765
 - SQLite database in application directory
 
@@ -128,12 +128,11 @@ def seed_default_data(repository: SQLiteRepository) -> None:
     except Exception as e:
         logger.error(f"Error seeding default data: {e}")
 
-def start_fastapi_server(app, host: str = '127.0.0.1', port: int = 8000) -> threading.Thread:
+def start_fastapi_server(host: str = '127.0.0.1', port: int = 3456) -> threading.Thread:
     """
     Start FastAPI server in a separate thread.
     
     Args:
-        app: FastAPI application instance
         host: Server host
         port: Server port
         
@@ -145,7 +144,7 @@ def start_fastapi_server(app, host: str = '127.0.0.1', port: int = 8000) -> thre
     def run_server():
         try:
             uvicorn.run(
-                app,
+                "app.app:app",
                 host=host,
                 port=port,
                 log_level="info",
@@ -196,7 +195,7 @@ def start_socketio_server(broadcaster, host: str = '127.0.0.1', port: int = 8765
     
     return server_thread
 
-def create_pywebview_window(url: str = "http://127.0.0.1:8000", title: str = "SignalGen") -> webview.Window:
+def create_pywebview_window(url: str = "http://127.0.0.1:3456", title: str = "SignalGen") -> webview.Window:
     """
     Create PyWebView window with specified URL.
     
@@ -243,7 +242,7 @@ def main() -> None:
         seed_default_data(signalgen_app.repository)
         
         # Start FastAPI server
-        fastapi_thread = start_fastapi_server(signalgen_app.get_app())
+        fastapi_thread = start_fastapi_server()
         
         # Start Socket.IO server
         socketio_thread = start_socketio_server(signalgen_app.broadcaster)
@@ -258,7 +257,7 @@ def main() -> None:
         logger.info("All components started, running application")
         
         # Run the webview (this blocks until window is closed)
-        webview.start()
+        webview.start(debug=True)
         
         logger.info("Application shutdown initiated")
         

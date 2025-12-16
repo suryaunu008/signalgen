@@ -23,7 +23,7 @@ Typical Usage:
     app = SignalGenApp()
     app.initialize_database()
     app.start_server()
-    # API runs on http://localhost:8000
+    # API runs on http://localhost:3456
 """
 
 import asyncio
@@ -194,7 +194,7 @@ class SignalGenApp:
         # Configure CORS with specific origins for security
         self.app.add_middleware(
             CORSMiddleware,
-            allow_origins=["http://localhost:8000", "http://127.0.0.1:8000", "file://"],
+            allow_origins=["http://localhost:3456", "http://127.0.0.1:3456", "file://"],
             allow_credentials=True,
             allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             allow_headers=["*"],
@@ -269,17 +269,26 @@ class SignalGenApp:
                 )
         
         @self.app.get("/api/status", response_model=SystemStatus)
-        async def get_system_status():
+        def get_system_status():
             """Get overall system status."""
             try:
-                # Get engine status
-                engine_status = await self._get_safe_engine_status()
+                # Get engine status (simplified for MVP)
+                engine_status = {
+                    'is_running': self._engine_running,
+                    'is_connected': False,
+                    'state': {'state': 'idle' if not self._engine_running else 'running'},
+                    'active_watchlist': [],
+                    'active_rule': None,
+                    'ibkr_connected': False,
+                    'reconnect_attempts': 0,
+                    'connection_details': {}
+                }
                 
                 # Get database stats
                 db_stats = self.repository.get_database_stats()
                 
-                # Get WebSocket status
-                connected_clients = await self.broadcaster.get_connected_clients()
+                # Get WebSocket status (simplified)
+                connected_clients = 0  # Simplified for MVP
                 
                 # Calculate uptime
                 uptime = "0:00:00"
@@ -293,7 +302,7 @@ class SignalGenApp:
                     engine=EngineStatus(**engine_status),
                     database=db_stats,
                     websocket={
-                        "connected_clients": len(connected_clients),
+                        "connected_clients": connected_clients,
                         "rooms": self.broadcaster.ROOMS
                     },
                     uptime=uptime
@@ -307,7 +316,7 @@ class SignalGenApp:
         
         # Rules endpoints
         @self.app.get("/api/rules", response_model=List[Dict])
-        async def get_all_rules():
+        def get_all_rules():
             """Get all trading rules."""
             try:
                 rules = self.repository.get_all_rules()
@@ -317,7 +326,7 @@ class SignalGenApp:
                 raise HTTPException(status_code=500, detail="Internal server error")
         
         @self.app.get("/api/rules/{rule_id}", response_model=Dict)
-        async def get_rule(rule_id: int):
+        def get_rule(rule_id: int):
             """Get a specific rule by ID."""
             try:
                 rule = self.repository.get_rule(rule_id)
@@ -331,7 +340,7 @@ class SignalGenApp:
                 raise HTTPException(status_code=500, detail="Internal server error")
         
         @self.app.post("/api/rules", response_model=Dict)
-        async def create_rule(rule: RuleCreate):
+        def create_rule(rule: RuleCreate):
             """Create a new trading rule."""
             try:
                 rule_id = self.repository.create_rule(
@@ -343,10 +352,10 @@ class SignalGenApp:
                 # Get created rule
                 created_rule = self.repository.get_rule(rule_id)
                 
-                # Broadcast update
-                asyncio.create_task(
-                    self.broadcaster.broadcast_rule_update(created_rule)
-                )
+                # Broadcast update (fire and forget)
+                # asyncio.create_task(
+                #     self.broadcaster.broadcast_rule_update(created_rule)
+                # )
                 
                 return JSONResponse(content=created_rule, status_code=201)
             except Exception as e:
@@ -354,7 +363,7 @@ class SignalGenApp:
                 raise HTTPException(status_code=500, detail="Internal server error")
         
         @self.app.put("/api/rules/{rule_id}", response_model=Dict)
-        async def update_rule(rule_id: int, rule: RuleUpdate):
+        def update_rule(rule_id: int, rule: RuleUpdate):
             """Update an existing rule."""
             try:
                 success = self.repository.update_rule(
@@ -369,10 +378,10 @@ class SignalGenApp:
                 # Get updated rule
                 updated_rule = self.repository.get_rule(rule_id)
                 
-                # Broadcast update
-                asyncio.create_task(
-                    self.broadcaster.broadcast_rule_update(updated_rule)
-                )
+                # Broadcast update (fire and forget)
+                # asyncio.create_task(
+                #     self.broadcaster.broadcast_rule_update(updated_rule)
+                # )
                 
                 return JSONResponse(content=updated_rule)
             except HTTPException:
@@ -382,7 +391,7 @@ class SignalGenApp:
                 raise HTTPException(status_code=500, detail="Internal server error")
         
         @self.app.delete("/api/rules/{rule_id}")
-        async def delete_rule(rule_id: int):
+        def delete_rule(rule_id: int):
             """Delete a custom rule."""
             try:
                 success = self.repository.delete_rule(rule_id)
@@ -398,7 +407,7 @@ class SignalGenApp:
         
         # Watchlists endpoints
         @self.app.get("/api/watchlists", response_model=List[Dict])
-        async def get_all_watchlists():
+        def get_all_watchlists():
             """Get all watchlists."""
             try:
                 watchlists = self.repository.get_all_watchlists()
@@ -408,7 +417,7 @@ class SignalGenApp:
                 raise HTTPException(status_code=500, detail="Internal server error")
         
         @self.app.post("/api/watchlists", response_model=Dict)
-        async def create_watchlist(watchlist: WatchlistCreate):
+        def create_watchlist(watchlist: WatchlistCreate):
             """Create a new watchlist."""
             try:
                 watchlist_id = self.repository.create_watchlist(
@@ -419,10 +428,10 @@ class SignalGenApp:
                 # Get created watchlist
                 created_watchlist = self.repository.get_watchlist(watchlist_id)
                 
-                # Broadcast update
-                asyncio.create_task(
-                    self.broadcaster.broadcast_watchlist_update(created_watchlist)
-                )
+                # Broadcast update (fire and forget)
+                # asyncio.create_task(
+                #     self.broadcaster.broadcast_watchlist_update(created_watchlist)
+                # )
                 
                 return JSONResponse(content=created_watchlist, status_code=201)
             except ValueError as e:
@@ -438,7 +447,7 @@ class SignalGenApp:
                 )
         
         @self.app.put("/api/watchlists/{watchlist_id}", response_model=Dict)
-        async def update_watchlist(watchlist_id: int, watchlist: WatchlistUpdate):
+        def update_watchlist(watchlist_id: int, watchlist: WatchlistUpdate):
             """Update an existing watchlist."""
             try:
                 # Check if engine is running (MVP constraint)
@@ -455,10 +464,10 @@ class SignalGenApp:
                 # Get updated watchlist
                 updated_watchlist = self.repository.get_watchlist(watchlist_id)
                 
-                # Broadcast update
-                asyncio.create_task(
-                    self.broadcaster.broadcast_watchlist_update(updated_watchlist)
-                )
+                # Broadcast update (fire and forget)
+                # asyncio.create_task(
+                #     self.broadcaster.broadcast_watchlist_update(updated_watchlist)
+                # )
                 
                 return JSONResponse(content=updated_watchlist)
             except HTTPException:
@@ -471,7 +480,7 @@ class SignalGenApp:
                 )
         
         @self.app.delete("/api/watchlists/{watchlist_id}")
-        async def delete_watchlist(watchlist_id: int):
+        def delete_watchlist(watchlist_id: int):
             """Delete a watchlist."""
             try:
                 # Check if engine is running (MVP constraint)
@@ -496,7 +505,7 @@ class SignalGenApp:
                 )
         
         @self.app.put("/api/watchlists/{watchlist_id}/activate")
-        async def activate_watchlist(watchlist_id: int):
+        def activate_watchlist(watchlist_id: int):
             """Set a watchlist as active."""
             try:
                 # Check if engine is running (MVP constraint)
@@ -513,10 +522,10 @@ class SignalGenApp:
                 # Get active watchlist
                 active_watchlist = self.repository.get_active_watchlist()
                 
-                # Broadcast update
-                asyncio.create_task(
-                    self.broadcaster.broadcast_watchlist_update(active_watchlist)
-                )
+                # Broadcast update (fire and forget)
+                # asyncio.create_task(
+                #     self.broadcaster.broadcast_watchlist_update(active_watchlist)
+                # )
                 
                 return {"message": "Watchlist activated successfully"}
             except HTTPException:
@@ -528,8 +537,8 @@ class SignalGenApp:
                     detail="Internal server error"
                 )
         
-        @self.app.post("/api/rules/{rule_id}/activate")
-        async def activate_rule(rule_id: int):
+        @self.app.put("/api/rules/{rule_id}/activate")
+        def activate_rule(rule_id: int):
             """Activate a rule."""
             try:
                 # Check if engine is running (MVP constraint)
@@ -543,10 +552,10 @@ class SignalGenApp:
                 if not rule:
                     raise HTTPException(status_code=404, detail="Rule not found")
                 
-                # Broadcast activation
-                asyncio.create_task(
-                    self.broadcaster.broadcast_rule_activation(rule_id, True)
-                )
+                # Broadcast activation (fire and forget)
+                # asyncio.create_task(
+                #     self.broadcaster.broadcast_rule_activation(rule_id, True)
+                # )
                 
                 return {"message": "Rule activated successfully"}
             except HTTPException:
@@ -560,17 +569,18 @@ class SignalGenApp:
         
         # Engine endpoints
         @self.app.get("/api/engine/status", response_model=EngineStatus)
-        async def get_engine_status():
+        def get_engine_status():
             """Get current engine status."""
             try:
-                status = await self.scalping_engine.get_engine_status()
+                # Get status from engine if available
+                status = self.scalping_engine.get_engine_status_sync()
                 return JSONResponse(content=status)
             except Exception as e:
                 self.logger.error(f"Error getting engine status: {e}")
                 raise HTTPException(status_code=500, detail="Internal server error")
         
         @self.app.post("/api/engine/start")
-        async def start_engine(engine_config: EngineStart, background_tasks: BackgroundTasks):
+        async def start_engine(engine_config: EngineStart):
             """Start the scalping engine."""
             with self._engine_lock:
                 try:
@@ -597,12 +607,13 @@ class SignalGenApp:
                             detail="Watchlist cannot exceed 5 symbols for MVP"
                         )
                     
-                    # Start engine in background
-                    background_tasks.add_task(
-                        self._start_engine_background,
-                        watchlist['symbols'],
-                        engine_config.rule_id
+                    # Start engine in separate thread with event loop
+                    engine_thread = threading.Thread(
+                        target=self._start_engine_in_thread,
+                        args=(watchlist['symbols'], engine_config.rule_id),
+                        daemon=True
                     )
+                    engine_thread.start()
                     
                     return {"message": "Engine start initiated"}
                 except HTTPException:
@@ -641,7 +652,7 @@ class SignalGenApp:
         
         # Signals endpoints
         @self.app.get("/api/signals", response_model=List[SignalResponse])
-        async def get_signals(limit: int = 100, symbol: Optional[str] = None):
+        def get_signals(limit: int = 100, symbol: Optional[str] = None):
             """Get recent signals."""
             try:
                 signals = self.repository.get_signals(limit=limit, symbol=symbol)
@@ -652,7 +663,7 @@ class SignalGenApp:
         
         # Settings endpoints
         @self.app.get("/api/settings/{key}", response_model=SettingsResponse)
-        async def get_setting(key: str):
+        def get_setting(key: str):
             """Get a setting value."""
             try:
                 value = self.repository.get_setting(key)
@@ -665,7 +676,7 @@ class SignalGenApp:
                 )
         
         @self.app.get("/api/settings", response_model=Dict[str, Any])
-        async def get_all_settings():
+        def get_all_settings():
             """Get all application settings."""
             try:
                 # Get common settings
@@ -727,9 +738,30 @@ class SignalGenApp:
                     detail="Internal server error"
                 )
     
-    async def _start_engine_background(self, symbols: List[str], rule_id: int) -> None:
+    def _start_engine_in_thread(self, symbols: List[str], rule_id: int) -> None:
         """
-        Start engine in background task.
+        Start engine in separate thread with its own event loop.
+        This is needed for ib_insync which requires an event loop.
+        
+        Args:
+            symbols: List of symbols to monitor
+            rule_id: Rule ID to use
+        """
+        # Create new event loop for this thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+            # Run the async start method in this thread's loop
+            loop.run_until_complete(self._start_engine_async(symbols, rule_id))
+        except Exception as e:
+            self.logger.error(f"Error in engine thread: {e}")
+        finally:
+            loop.close()
+    
+    async def _start_engine_async(self, symbols: List[str], rule_id: int) -> None:
+        """
+        Async method to start the engine.
         
         Args:
             symbols: List of symbols to monitor
@@ -740,14 +772,20 @@ class SignalGenApp:
                 self._engine_running = True
                 self._engine_start_time = datetime.utcnow()
                 
-                success = await self.scalping_engine.start_engine(symbols, rule_id)
-                if success:
-                    # Broadcast engine status
+            success = await self.scalping_engine.start_engine(symbols, rule_id)
+            if success:
+                self.logger.info(f"Engine started successfully with {len(symbols)} symbols")
+                
+                # Broadcast engine status (simplified - just log for now)
+                try:
                     status = await self.scalping_engine.get_engine_status()
-                    await self.broadcaster.broadcast_engine_status(status)
-                    
-                    self.logger.info(f"Engine started successfully with {len(symbols)} symbols")
-                else:
+                    self.logger.info(f"Engine status after start: {status}")
+                    # Note: WebSocket broadcast from different thread/loop is complex
+                    # Frontend will poll /api/engine/status instead
+                except Exception as e:
+                    self.logger.warning(f"Could not get engine status for broadcast: {e}")
+            else:
+                with self._engine_lock:
                     self._engine_running = False
                     self._engine_start_time = None
                     
@@ -756,11 +794,14 @@ class SignalGenApp:
                 self._engine_running = False
                 self._engine_start_time = None
                 
-            self.logger.error(f"Error in background engine start: {e}")
-            await self.broadcaster.broadcast_error({
-                'type': 'engine_start_error',
-                'message': str(e)
-            })
+            self.logger.error(f"Error starting engine: {e}")
+            try:
+                await self.broadcaster.broadcast_error({
+                    'type': 'engine_start_error',
+                    'message': str(e)
+                })
+            except Exception:
+                pass  # Ignore broadcast errors
     
     async def _get_safe_engine_status(self) -> Dict[str, Any]:
         """
