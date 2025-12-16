@@ -342,21 +342,9 @@ class ScalpingEngine:
             if bars:
                 last_bar = bars[-1]
                 if last_bar.close > 0:
-                    initial_price_data = {
-                        'symbol': symbol,
-                        'price': last_bar.close,
-                        'bid': None,
-                        'ask': None,
-                        'last': last_bar.close,
-                        'timestamp': datetime.utcnow().isoformat()
-                    }
-                    
-                    # Broadcast initial price using sync method from non-async context
-                    if self.broadcaster:
-                        try:
-                            self.broadcaster.broadcast_price_update_sync(initial_price_data)
-                        except Exception as e:
-                            self.logger.error(f"Failed to broadcast initial price for {symbol}: {e}")
+                    # Broadcast initial price
+                    timestamp = last_bar.date.timestamp() if hasattr(last_bar.date, 'timestamp') else time.time()
+                    await self.broadcaster.broadcast_price_update(symbol, last_bar.close, timestamp)
                     
                     self.logger.info(f"Sent initial price for {symbol}: {last_bar.close}")
             
@@ -396,43 +384,70 @@ class ScalpingEngine:
                 if symbol not in self.active_watchlist:
                     self.indicator_engine.initialize_symbol(symbol)
             
-            # Set up bar update event handler if not already set
-            if not hasattr(self, '_bar_handler_registered'):
-                self.ib.barUpdateEvent += self._on_bar_update
-                self._bar_handler_registered = True
-            
             # Subscribe to real-time bars for each symbol
             for symbol in symbols:
                 if symbol not in self.active_watchlist:
-                    contract = Stock(symbol, 'SMART', 'USD')
+                    # Build contract and qualify to ensure valid conId mapping
+                    base_contract = Stock(symbol, 'SMART', 'USD')
+                    try:
+                        qualified = await self.ib.qualifyContractsAsync(base_contract)
+                        contract = qualified[0] if qualified else base_contract
+                    except Exception as e:
+                        self.logger.error(f"Failed to qualify contract for {symbol}: {e}")
+                        contract = base_contract
+
+                    # Track qualified contract and symbol mapping using conId
                     self.subscribed_contracts[symbol] = contract
-                    self.contract_symbol_map[contract.conId] = symbol
+                    if getattr(contract, 'conId', 0):
+                        self.contract_symbol_map[contract.conId] = symbol
+                    else:
+                        # Fallback mapping will be set on first ticker update if needed
+                        self.logger.warning(f"Contract for {symbol} has no conId after qualification; mapping deferred")
                     
                     # Request historical data first to populate indicators
                     await self.request_historical_data(symbol, contract)
                     
-                    # Request real-time 5-second bars and store the RealTimeBars object
+                    # PRIMARY: Request real-time 5-second bars for price updates
+                    # This is the RECOMMENDED approach per ib-insync docs for streaming data
+                    # More reliable than tick-by-tick as it won't miss updates
                     bars = self.ib.reqRealTimeBars(
                         contract,
-                        5,  # 5-second bars
-                        'MIDPOINT',
-                        False,  # Regular trading hours only
+                        5,  # 5-second bars (smallest available)
+                        'TRADES',  # Use TRADES for actual market activity
+                        False,  # Include extended hours
                         []
                     )
                     self.real_time_bars[symbol] = bars
+                    self.logger.info(f"Real-time bars subscription active for {symbol}")
                     
-                    # Subscribe to real-time market data for price updates
-                    # This provides tick-by-tick price updates separate from bars
-                    ticker = self.ib.reqMktData(contract, '', False, False)
+                    # CRITICAL: Attach handler to this specific bars object
+                    bars.updateEvent += self._on_bar_update
+                    self.logger.info(f"Bars object created: contract={bars.contract.symbol if bars.contract else 'None'}, len={len(bars)}, updateEvent subscribers={len(bars.updateEvent)}")
+                    
+                    # SECONDARY: Subscribe to market data for instant price display (UI only)
+                    # This provides current bid/ask/last for immediate UI updates
+                    # Note: Per docs, ticks can go missing; we rely on bars for trading logic
+                    ticker = self.ib.reqMktData(
+                        contract,
+                        '',  # No generic ticks needed
+                        False,  # Not a snapshot
+                        False,  # Not regulatory snapshot
+                        []
+                    )
                     ticker.updateEvent += self._on_ticker_update
                     
-                    # Store ticker mapping for later cleanup
+                    # Log initial ticker state
+                    self.logger.info(f"Market data subscription for {symbol}: bid={ticker.bid}, ask={ticker.ask}, last={ticker.last}")
+                    
+                    # Store ticker mapping for cleanup
                     if not hasattr(self, 'subscribed_tickers'):
                         self.subscribed_tickers = {}
                     self.subscribed_tickers[symbol] = ticker
                     
                     self.active_watchlist.append(symbol)
-                    self.logger.info(f"Subscribed to real-time data and market tickers for {symbol}")
+                    
+                    # Verify subscription status
+                    self.logger.info(f"[OK] Subscribed: {symbol} | Bars: {len(bars)} | Bar subscribers: {len(bars.updateEvent)} | Ticker subscribers: {len(ticker.updateEvent)}")
             
             return True
             
@@ -547,6 +562,15 @@ class ScalpingEngine:
             return False
         
         self.logger.info(f"Engine started with watchlist: {watchlist}, rule: {self.active_rule['name']}")
+        
+        # Schedule a debug check after a few seconds to verify tickers are working
+        async def delayed_ticker_check():
+            await asyncio.sleep(5)
+            self.debug_ticker_status()
+        
+        if self.event_loop:
+            asyncio.ensure_future(delayed_ticker_check(), loop=self.event_loop)
+        
         return True
     
     async def stop_engine(self) -> None:
@@ -565,6 +589,12 @@ class ScalpingEngine:
             bars: RealTimeBars object containing bar data from IBKR
             hasNewBar: Whether a new bar was added
         """
+        # Log bar updates at debug level
+        contract = getattr(bars, 'contract', None)
+        if contract:
+            symbol = self.contract_symbol_map.get(contract.conId, getattr(contract, 'symbol', 'UNKNOWN'))
+            self.logger.debug(f"BAR UPDATE: {symbol} | hasNewBar={hasNewBar} | len={len(bars)}")
+        
         if not self.is_running or not bars or not self.is_connected:
             return
         
@@ -598,11 +628,17 @@ class ScalpingEngine:
             # Update price data in indicator engine
             # RealTimeBar has 'time' attribute, not 'date'
             timestamp = bar_data.time.timestamp() if bar_data.time else time.time()
+            price = bar_data.close
+            
             self.indicator_engine.update_price_data(
                 symbol=symbol,
-                price=bar_data.close,
+                price=price,
                 timestamp=timestamp
             )
+            
+            # CRITICAL: Broadcast price update to UI from bars (primary source)
+            asyncio.create_task(self._broadcast_price_async(symbol, price, timestamp))
+            self.logger.debug(f"Bar update: {symbol} @ {price:.2f}, hasNewBar={hasNewBar}")
             
             # Get current indicators for this symbol
             indicators = self.indicator_engine.get_indicators(symbol)
@@ -615,7 +651,13 @@ class ScalpingEngine:
             # Evaluate rule only if we can generate a signal
             if self.state_machine.can_generate_signal() and self.active_rule:
                 try:
-                    rule_result = self.rule_engine.evaluate(self.active_rule, indicators)
+                    # Extract rule definition if stored in nested format
+                    rule_to_evaluate = self.active_rule
+                    if 'definition' in self.active_rule and isinstance(self.active_rule['definition'], dict):
+                        # Merge definition fields with root for evaluation
+                        rule_to_evaluate = {**self.active_rule, **self.active_rule['definition']}
+                    
+                    rule_result = self.rule_engine.evaluate(rule_to_evaluate, indicators)
                     
                     if rule_result:
                         # Generate signal
@@ -630,6 +672,13 @@ class ScalpingEngine:
             self.logger.error(f"Invalid price data: {e}")
         except Exception as e:
             self.logger.error(f"Error processing bar update: {e}")
+    
+    async def _broadcast_price_async(self, symbol: str, price: float, timestamp: float) -> None:
+        """Helper to broadcast price update asynchronously from bar handler."""
+        try:
+            await self.broadcaster.broadcast_price_update(symbol, price, timestamp)
+        except Exception as e:
+            self.logger.error(f"Failed to broadcast price for {symbol}: {e}")
     
     def _generate_signal(self, symbol: str, price: float, timestamp: float) -> None:
         """
@@ -680,13 +729,21 @@ class ScalpingEngine:
     
     def _on_ticker_update(self, ticker) -> None:
         """
-        Handle real-time ticker updates from IBKR for price broadcasting.
+        Handle ticker updates (SECONDARY price source for instant UI updates only).
+        Per ib-insync docs, ticks can go missing - we rely on reqRealTimeBars for trading logic.
+        This provides immediate bid/ask/last for UI display between 5-second bars.
         
         Args:
-            ticker: Ticker object from ib_insync with price updates
+            ticker: Ticker object from ib_insync
         """
         if not self.is_running or not ticker or not self.is_connected:
             return
+        
+        # Log ticker updates at debug level
+        contract = getattr(ticker, 'contract', None)
+        if contract:
+            symbol = self.contract_symbol_map.get(contract.conId, getattr(contract, 'symbol', 'UNKNOWN'))
+            self.logger.debug(f"TICKER: {symbol} | bid={ticker.bid}, ask={ticker.ask}, last={ticker.last}")
         
         try:
             # Get contract and map to symbol
@@ -696,38 +753,34 @@ class ScalpingEngine:
             
             symbol = self.contract_symbol_map.get(contract.conId)
             if not symbol:
-                return
+                # Late-binding: map conId to symbol if missing
+                derived_symbol = getattr(contract, 'symbol', None)
+                if derived_symbol and contract.conId:
+                    self.contract_symbol_map[contract.conId] = derived_symbol
+                    symbol = derived_symbol
+                    self.logger.info(f"Late-mapped ticker conId {contract.conId} to {symbol}")
+                else:
+                    return
             
-            # Get price - prefer last trade, fallback to market price (midpoint)
+            # Get price - prefer last trade, fallback to midpoint
             price = None
             if ticker.last and ticker.last > 0:
                 price = ticker.last
             elif ticker.marketPrice() and ticker.marketPrice() > 0:
                 price = ticker.marketPrice()
             else:
-                # Skip update if no valid price
-                return
+                return  # No valid price
             
-            # Build price data for broadcast
-            price_data = {
-                'symbol': symbol,
-                'price': price,
-                'bid': ticker.bid if ticker.bid and ticker.bid > 0 else None,
-                'ask': ticker.ask if ticker.ask and ticker.ask > 0 else None,
-                'last': ticker.last if ticker.last and ticker.last > 0 else None,
-                'timestamp': datetime.utcnow().isoformat()
-            }
+            timestamp = time.time()
             
-            # Broadcast price update via WebSocket using sync method
-            if self.broadcaster:
-                try:
-                    self.broadcaster.broadcast_price_update_sync(price_data)
-                except Exception as e:
-                    self.logger.error(f"Failed to broadcast price for {symbol}: {e}")
+            # Broadcast to UI for instant updates (bars handle every 5 seconds)
+            # This gives smoother UI updates between bars
+            asyncio.create_task(self._broadcast_price_async(symbol, price, timestamp))
+            
+            self.logger.debug(f"Tick: {symbol} @ {price:.2f} (bid={ticker.bid}, ask={ticker.ask}, last={ticker.last})")
                 
         except Exception as e:
             self.logger.error(f"Error processing ticker update: {e}")
-            self.state_machine.force_wait_state()
     
     async def get_engine_status(self) -> Dict:
         """
@@ -803,6 +856,21 @@ class ScalpingEngine:
             List[str]: List of active symbols
         """
         return self.active_watchlist.copy()
+    
+    def debug_ticker_status(self) -> None:
+        """Debug method to log current ticker states."""
+        if not hasattr(self, 'subscribed_tickers'):
+            self.logger.warning("No subscribed_tickers attribute")
+            return
+        
+        self.logger.info(f"=== Ticker Status Debug ===")
+        for symbol, ticker in self.subscribed_tickers.items():
+            try:
+                self.logger.info(f"{symbol}: last={ticker.last}, bid={ticker.bid}, ask={ticker.ask}, "
+                               f"marketPrice={ticker.marketPrice()}, time={ticker.time}")
+            except Exception as e:
+                self.logger.error(f"Error checking ticker for {symbol}: {e}")
+        self.logger.info(f"=== End Ticker Status ===")
     
     def get_active_rule(self) -> Optional[Dict]:
         """

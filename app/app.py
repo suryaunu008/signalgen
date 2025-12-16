@@ -778,30 +778,47 @@ class SignalGenApp:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
+        # Store loop reference for stopping later
+        self._engine_loop = loop
+        
         try:
-            # Run the async start method in this thread's loop
+            # Start the engine
             loop.run_until_complete(self._start_engine_async(symbols, rule_id))
+            
+            # CRITICAL: Keep the loop running to process IBKR events
+            # The loop must stay alive to receive real-time updates
+            self.logger.info("Engine started, keeping event loop running for real-time updates...")
+            loop.run_forever()
+            
         except Exception as e:
             self.logger.error(f"Error in engine thread: {e}")
         finally:
             loop.close()
+            self._engine_loop = None
     
     def _stop_engine_in_thread(self) -> None:
         """
-        Stop engine in separate thread with its own event loop.
+        Stop engine in separate thread with event loop.
         This is needed for ib_insync which requires an event loop.
         """
-        # Create new event loop for this thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        try:
-            # Run the async stop method in this thread's loop
-            loop.run_until_complete(self._stop_engine_async())
-        except Exception as e:
-            self.logger.error(f"Error in stop engine thread: {e}")
-        finally:
-            loop.close()
+        # If the engine loop is still running, stop it properly
+        if hasattr(self, '_engine_loop') and self._engine_loop and self._engine_loop.is_running():
+            # Schedule stop in the running loop
+            asyncio.run_coroutine_threadsafe(self._stop_engine_async(), self._engine_loop)
+            # Stop the event loop
+            self._engine_loop.call_soon_threadsafe(self._engine_loop.stop)
+            self.logger.info("Stopped engine event loop")
+        else:
+            # Fallback: create temporary loop for cleanup
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            try:
+                loop.run_until_complete(self._stop_engine_async())
+            except Exception as e:
+                self.logger.error(f"Error in stop engine thread: {e}")
+            finally:
+                loop.close()
     
     async def _stop_engine_async(self) -> None:
         """Async method to stop the engine."""

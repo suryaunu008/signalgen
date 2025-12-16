@@ -153,6 +153,14 @@ class SocketIOBroadcaster:
             environ: Connection environment information
         """
         try:
+            # Capture the running event loop used by the Socket.IO server
+            try:
+                self._loop = asyncio.get_running_loop()
+                self.logger.info(f"Captured event loop {id(self._loop)} on client connect")
+            except RuntimeError:
+                self._loop = None
+                self.logger.warning("No running loop available on client connect")
+            
             # Extract client information
             client_info = {
                 'sid': sid,
@@ -258,44 +266,31 @@ class SocketIOBroadcaster:
                 'data': signal_data
             })
     
-    async def broadcast_price_update(self, price_data: Dict[str, Any]) -> None:
+    async def broadcast_price_update(self, symbol: str, price: float, timestamp: float) -> None:
         """
         Broadcast real-time price updates to all connected clients.
         
         Args:
-            price_data: Price data with format:
-                {
-                    "symbol": "AAPL",
-                    "price": 189.20,
-                    "bid": 189.18,
-                    "ask": 189.22,
-                    "last": 189.20,
-                    "timestamp": "2025-12-16T09:31:00Z"
-                }
+            symbol: Trading symbol (e.g., "AAPL")
+            price: Current price
+            timestamp: Unix timestamp of price update
         """
         try:
-            # Validate required fields
-            if 'symbol' not in price_data or 'price' not in price_data:
-                raise ValueError("Price data must contain 'symbol' and 'price' fields")
-            
             # Skip if no connected clients
             if not self.connected_clients:
                 return
             
             # Format price event
             price_event = {
-                "symbol": price_data['symbol'],
-                "price": price_data['price'],
-                "bid": price_data.get('bid'),
-                "ask": price_data.get('ask'),
-                "last": price_data.get('last'),
-                "timestamp": price_data.get('timestamp', datetime.utcnow().isoformat())
+                "symbol": symbol,
+                "price": price,
+                "timestamp": datetime.fromtimestamp(timestamp).isoformat()
             }
             
             # Broadcast to prices room
             await self.sio.emit('price_update', price_event, room=self.ROOMS['prices'])
             
-            self.logger.debug(f"Price update broadcasted: {price_data.get('symbol')} @ {price_data.get('price')}")
+            self.logger.debug(f"Price update broadcasted: {symbol} @ {price}")
             
         except Exception as e:
             self.logger.error(f"Error broadcasting price update: {e}")
@@ -304,8 +299,8 @@ class SocketIOBroadcaster:
         """
         Synchronous wrapper for broadcasting price updates from non-async contexts.
         
-        This method handles thread-safe emission of price updates using threading
-        to call the async broadcast method.
+        This method handles thread-safe emission of price updates using the Socket.IO
+        server's event loop when available, falling back to a background thread.
         
         Args:
             price_data: Price data to broadcast
@@ -316,33 +311,50 @@ class SocketIOBroadcaster:
                 self.logger.warning("Invalid price data - missing symbol or price")
                 return
             
-            # Use threading to call emit in a thread-safe way
-            import threading
-            def do_emit():
+            # Prefer emitting into the Socket.IO server loop directly
+            if self._loop:
                 try:
-                    import asyncio
+                    if self._loop.is_running():
+                        asyncio.run_coroutine_threadsafe(
+                            self.broadcast_price_update(price_data),
+                            self._loop
+                        )
+                        self.logger.debug(f"Price update for {price_data['symbol']} scheduled on server loop")
+                        return
+                    else:
+                        self.logger.warning(f"Server loop {id(self._loop)} is not running, using fallback")
+                except Exception as e:
+                    self.logger.error(f"Failed to schedule price emit on server loop: {e}")
+            else:
+                self.logger.debug("No server loop available, using fallback thread")
+            
+            # Fallback: emit directly using Socket.IO's internal mechanism
+            # This is risky but necessary when no loop is captured
+            try:
+                # Try to use the Socket.IO server's internal event loop
+                import threading
+                def do_emit_fallback():
                     try:
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
+                        # Check if there's ANY running loop we can use
+                        try:
+                            loop = asyncio.get_running_loop()
                             asyncio.run_coroutine_threadsafe(
                                 self.broadcast_price_update(price_data),
                                 loop
                             )
-                        else:
+                            self.logger.debug(f"Price update scheduled on discovered loop {id(loop)}")
+                        except RuntimeError:
+                            # No running loop, create temporary one
                             loop = asyncio.new_event_loop()
                             asyncio.set_event_loop(loop)
                             loop.run_until_complete(self.broadcast_price_update(price_data))
                             loop.close()
-                    except RuntimeError:
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        loop.run_until_complete(self.broadcast_price_update(price_data))
-                        loop.close()
-                except Exception as e:
-                    self.logger.error(f"Error emitting price in thread: {e}")
-            
-            threading.Thread(target=do_emit, daemon=True).start()
-            
+                            self.logger.debug("Price update emitted via temporary loop")
+                    except Exception as e:
+                        self.logger.error(f"Error emitting price in fallback thread: {e}", exc_info=True)
+                threading.Thread(target=do_emit_fallback, daemon=True).start()
+            except Exception as e:
+                self.logger.error(f"Failed to start fallback thread: {e}", exc_info=True)
         except Exception as e:
             self.logger.error(f"Error in sync price broadcast: {e}")
     
@@ -609,6 +621,13 @@ class SocketIOBroadcaster:
         Returns:
             ASGI application
         """
+        # Attempt early loop capture if in async context
+        try:
+            self._loop = asyncio.get_running_loop()
+            self.logger.info(f"Captured event loop {id(self._loop)} in create_asgi_app")
+        except RuntimeError:
+            self.logger.debug("No running loop in create_asgi_app (normal for sync startup)")
+        
         return socketio.ASGIApp(self.sio)
     
     async def initialize(self) -> None:
