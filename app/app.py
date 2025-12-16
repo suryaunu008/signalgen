@@ -803,9 +803,15 @@ class SignalGenApp:
         """
         # If the engine loop is still running, stop it properly
         if hasattr(self, '_engine_loop') and self._engine_loop and self._engine_loop.is_running():
-            # Schedule stop in the running loop
-            asyncio.run_coroutine_threadsafe(self._stop_engine_async(), self._engine_loop)
-            # Stop the event loop
+            # Schedule stop in the running loop and wait for completion
+            future = asyncio.run_coroutine_threadsafe(self._stop_engine_async(), self._engine_loop)
+            try:
+                # Wait up to 5 seconds for stop to complete
+                future.result(timeout=5.0)
+            except Exception as e:
+                self.logger.error(f"Error waiting for engine stop: {e}")
+            
+            # Now stop the event loop
             self._engine_loop.call_soon_threadsafe(self._engine_loop.stop)
             self.logger.info("Stopped engine event loop")
         else:
