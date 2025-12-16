@@ -238,8 +238,14 @@ class ScalpingEngine:
             self.logger.warning("Engine is already running")
             return False
         
-        # Set event loop
-        self.event_loop = asyncio.get_event_loop()
+        # Get the currently running event loop
+        try:
+            self.event_loop = asyncio.get_running_loop()
+            self.logger.debug(f"Using running event loop: {id(self.event_loop)}")
+        except RuntimeError:
+            # Fallback to get_event_loop if no running loop
+            self.event_loop = asyncio.get_event_loop()
+            self.logger.debug(f"Using fallback event loop: {id(self.event_loop)}")
         
         # Connect to IBKR
         if not await self.connect_to_ibkr():
@@ -288,6 +294,78 @@ class ScalpingEngine:
         
         self.logger.info("Scalping engine stopped")
     
+    async def request_historical_data(self, symbol: str, contract: Contract) -> bool:
+        """
+        Request historical bar data to populate indicators and initial prices.
+        
+        Args:
+            symbol: Stock symbol
+            contract: IB contract object
+            
+        Returns:
+            bool: True if historical data retrieved successfully
+        """
+        try:
+            self.logger.info(f"Requesting historical data for {symbol}...")
+            
+            # Request last 1 hour of 5-second bars to populate indicator engine
+            # This gives us enough data for MA20 (20 bars needed)
+            # Duration: '3600 S' = 1 hour, BarSize: '5 secs', WhatToShow: 'MIDPOINT'
+            bars = await self.ib.reqHistoricalDataAsync(
+                contract=contract,
+                endDateTime='',  # Current time
+                durationStr='3600 S',  # 1 hour
+                barSizeSetting='5 secs',
+                whatToShow='MIDPOINT',
+                useRTH=False,  # Include extended hours
+                formatDate=1
+            )
+            
+            if not bars:
+                self.logger.warning(f"No historical data received for {symbol}")
+                return False
+            
+            self.logger.info(f"Received {len(bars)} historical bars for {symbol}")
+            
+            # Prepare historical price data for bulk update
+            price_data_list = []
+            for bar in bars:
+                if bar.close > 0:
+                    timestamp = bar.date.timestamp() if hasattr(bar.date, 'timestamp') else time.time()
+                    price_data_list.append((bar.close, timestamp))
+            
+            # Bulk update indicator engine with historical bars (more efficient)
+            if price_data_list:
+                self.indicator_engine.bulk_update_price_data(symbol, price_data_list)
+            
+            # Send initial price to frontend if we have data
+            if bars:
+                last_bar = bars[-1]
+                if last_bar.close > 0:
+                    initial_price_data = {
+                        'symbol': symbol,
+                        'price': last_bar.close,
+                        'bid': None,
+                        'ask': None,
+                        'last': last_bar.close,
+                        'timestamp': datetime.utcnow().isoformat()
+                    }
+                    
+                    # Broadcast initial price using sync method from non-async context
+                    if self.broadcaster:
+                        try:
+                            self.broadcaster.broadcast_price_update_sync(initial_price_data)
+                        except Exception as e:
+                            self.logger.error(f"Failed to broadcast initial price for {symbol}: {e}")
+                    
+                    self.logger.info(f"Sent initial price for {symbol}: {last_bar.close}")
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to request historical data for {symbol}: {e}")
+            return False
+    
     async def subscribe_symbols(self, symbols: List[str]) -> bool:
         """
         Subscribe to market data for symbols.
@@ -330,6 +408,9 @@ class ScalpingEngine:
                     self.subscribed_contracts[symbol] = contract
                     self.contract_symbol_map[contract.conId] = symbol
                     
+                    # Request historical data first to populate indicators
+                    await self.request_historical_data(symbol, contract)
+                    
                     # Request real-time 5-second bars and store the RealTimeBars object
                     bars = self.ib.reqRealTimeBars(
                         contract,
@@ -340,8 +421,18 @@ class ScalpingEngine:
                     )
                     self.real_time_bars[symbol] = bars
                     
+                    # Subscribe to real-time market data for price updates
+                    # This provides tick-by-tick price updates separate from bars
+                    ticker = self.ib.reqMktData(contract, '', False, False)
+                    ticker.updateEvent += self._on_ticker_update
+                    
+                    # Store ticker mapping for later cleanup
+                    if not hasattr(self, 'subscribed_tickers'):
+                        self.subscribed_tickers = {}
+                    self.subscribed_tickers[symbol] = ticker
+                    
                     self.active_watchlist.append(symbol)
-                    self.logger.info(f"Subscribed to real-time data for {symbol}")
+                    self.logger.info(f"Subscribed to real-time data and market tickers for {symbol}")
             
             return True
             
@@ -372,6 +463,16 @@ class ScalpingEngine:
                             self.logger.info(f"Cancelled real-time bars for {symbol}")
                         except Exception as e:
                             self.logger.error(f"Error canceling bars for {symbol}: {e}")
+                    
+                    # Cancel market data subscription for price tickers
+                    if self.ib.isConnected():
+                        try:
+                            if hasattr(self, 'subscribed_tickers') and symbol in self.subscribed_tickers:
+                                self.ib.cancelMktData(contract)
+                                del self.subscribed_tickers[symbol]
+                                self.logger.info(f"Cancelled market data for {symbol}")
+                        except Exception as e:
+                            self.logger.error(f"Error canceling market data for {symbol}: {e}")
                     
                     # Now safe to clean up mappings
                     del self.subscribed_contracts[symbol]
@@ -456,19 +557,24 @@ class ScalpingEngine:
         """Subscribe to real-time bar data for all symbols in watchlist."""
         await self.subscribe_symbols(self.active_watchlist)
     
-    def _on_bar_update(self, bar_data: BarData) -> None:
+    def _on_bar_update(self, bars: BarDataList, hasNewBar: bool) -> None:
         """
         Handle real-time bar updates from IBKR.
         
         Args:
-            bar_data: Single bar data from IBKR
+            bars: RealTimeBars object containing bar data from IBKR
+            hasNewBar: Whether a new bar was added
         """
-        if not self.is_running or not bar_data or not self.is_connected:
+        if not self.is_running or not bars or not self.is_connected:
+            return
+        
+        # Only process when a new bar is available
+        if not hasNewBar:
             return
         
         try:
-            # Extract symbol from contract using our mapping
-            contract = getattr(bar_data, 'contract', None)
+            # Get contract from the bars object (not from individual bar)
+            contract = getattr(bars, 'contract', None)
             if not contract:
                 self.logger.warning("Received bar data without contract information")
                 return
@@ -478,13 +584,20 @@ class ScalpingEngine:
                 self.logger.warning(f"Received bar data for unknown contract conId: {contract.conId}")
                 return
             
+            # Get the most recent bar from the list
+            if len(bars) == 0:
+                return
+            
+            bar_data = bars[-1]
+            
             # Validate bar data
             if bar_data.close <= 0:
                 self.logger.warning(f"Invalid price data for {symbol}: {bar_data.close}")
                 return
             
             # Update price data in indicator engine
-            timestamp = bar_data.date.timestamp() if bar_data.date else time.time()
+            # RealTimeBar has 'time' attribute, not 'date'
+            timestamp = bar_data.time.timestamp() if bar_data.time else time.time()
             self.indicator_engine.update_price_data(
                 symbol=symbol,
                 price=bar_data.close,
@@ -547,7 +660,13 @@ class ScalpingEngine:
             
             # Broadcast signal via WebSocket
             if self.event_loop and self.broadcaster:
-                asyncio.create_task(self.broadcaster.broadcast_signal(signal_data))
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        self.broadcaster.broadcast_signal(signal_data),
+                        self.event_loop
+                    )
+                except Exception as e:
+                    self.logger.error(f"Failed to schedule signal broadcast: {e}")
             
             # Start cooldown period
             cooldown_sec = self.active_rule.get('cooldown_sec', 60)
@@ -558,6 +677,56 @@ class ScalpingEngine:
         except Exception as e:
             self.logger.error(f"Error generating signal for {symbol}: {e}")
             # Reset state on error
+    
+    def _on_ticker_update(self, ticker) -> None:
+        """
+        Handle real-time ticker updates from IBKR for price broadcasting.
+        
+        Args:
+            ticker: Ticker object from ib_insync with price updates
+        """
+        if not self.is_running or not ticker or not self.is_connected:
+            return
+        
+        try:
+            # Get contract and map to symbol
+            contract = getattr(ticker, 'contract', None)
+            if not contract:
+                return
+            
+            symbol = self.contract_symbol_map.get(contract.conId)
+            if not symbol:
+                return
+            
+            # Get price - prefer last trade, fallback to market price (midpoint)
+            price = None
+            if ticker.last and ticker.last > 0:
+                price = ticker.last
+            elif ticker.marketPrice() and ticker.marketPrice() > 0:
+                price = ticker.marketPrice()
+            else:
+                # Skip update if no valid price
+                return
+            
+            # Build price data for broadcast
+            price_data = {
+                'symbol': symbol,
+                'price': price,
+                'bid': ticker.bid if ticker.bid and ticker.bid > 0 else None,
+                'ask': ticker.ask if ticker.ask and ticker.ask > 0 else None,
+                'last': ticker.last if ticker.last and ticker.last > 0 else None,
+                'timestamp': datetime.utcnow().isoformat()
+            }
+            
+            # Broadcast price update via WebSocket using sync method
+            if self.broadcaster:
+                try:
+                    self.broadcaster.broadcast_price_update_sync(price_data)
+                except Exception as e:
+                    self.logger.error(f"Failed to broadcast price for {symbol}: {e}")
+                
+        except Exception as e:
+            self.logger.error(f"Error processing ticker update: {e}")
             self.state_machine.force_wait_state()
     
     async def get_engine_status(self) -> Dict:

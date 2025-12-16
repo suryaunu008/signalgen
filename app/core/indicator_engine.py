@@ -110,6 +110,29 @@ class IndicatorEngine:
             
             self.logger.debug(f"Updated price data for {symbol}: {price} at {timestamp}")
     
+    def bulk_update_price_data(self, symbol: str, prices: List[tuple]) -> None:
+        """
+        Bulk update price data for a symbol (used for historical data).
+        
+        Args:
+            symbol: Stock symbol
+            prices: List of (price, timestamp) tuples in chronological order
+        """
+        with self.lock:
+            # Initialize symbol if not exists
+            if symbol not in self.price_data:
+                self.initialize_symbol(symbol)
+            
+            # Add all historical prices
+            for price, timestamp in prices:
+                if isinstance(price, (int, float)) and price > 0:
+                    self.price_data[symbol].append((price, timestamp))
+            
+            # Calculate indicators once after all data is loaded (suppress warnings during bulk load)
+            self._calculate_indicators_for_symbol(symbol, suppress_warnings=True)
+            
+            self.logger.info(f"Bulk updated {len(prices)} price points for {symbol}")
+    
     def get_indicators(self, symbol: str) -> Dict[str, float]:
         """
         Get all current indicator values for a symbol.
@@ -160,12 +183,13 @@ class IndicatorEngine:
         
         return results
     
-    def _calculate_indicators_for_symbol(self, symbol: str) -> None:
+    def _calculate_indicators_for_symbol(self, symbol: str, suppress_warnings: bool = False) -> None:
         """
         Calculate all indicators for a specific symbol.
         
         Args:
             symbol: Stock symbol to calculate indicators for
+            suppress_warnings: If True, don't log warnings for insufficient data
         """
         if symbol not in self.price_data:
             return
@@ -192,7 +216,8 @@ class IndicatorEngine:
                 
         except ValueError as e:
             # Handle insufficient data gracefully
-            self.logger.warning(f"Insufficient data for {symbol}: {e}")
+            if not suppress_warnings:
+                self.logger.warning(f"Insufficient data for {symbol}: {e}")
             # Keep only PRICE if insufficient data for MAs
             pass
     

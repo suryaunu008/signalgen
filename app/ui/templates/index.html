@@ -13,6 +13,41 @@
     <script src="/static/js/app.js"></script>
     <script src="/static/js/websocket.js"></script>
     <script src="/static/js/api.js"></script>
+    <style>
+      /* Price table animations */
+      .price-flash {
+        animation: priceFlash 1s ease-in-out;
+      }
+
+      @keyframes priceFlash {
+        0% {
+          background-color: transparent;
+        }
+        50% {
+          background-color: rgba(59, 130, 246, 0.1); /* Light blue flash */
+        }
+        100% {
+          background-color: transparent;
+        }
+      }
+
+      /* Price change indicators */
+      .change-symbol {
+        display: inline-block;
+        margin-right: 4px;
+        font-weight: bold;
+      }
+
+      .change-amount {
+        font-weight: 600;
+      }
+
+      .change-percent {
+        margin-left: 4px;
+        font-size: 0.875em;
+        opacity: 0.8;
+      }
+    </style>
   </head>
   <body class="bg-gray-100 text-gray-800">
     <!-- Header -->
@@ -89,8 +124,25 @@
             </div>
           </section>
 
+          <!-- Real-Time Price Table -->
+          <section
+            id="price-table-section"
+            class="bg-white rounded-lg shadow-md p-6"
+          >
+            <h2 class="text-xl font-semibold mb-4 flex items-center">
+              <i class="fas fa-chart-line mr-2 text-blue-600"></i>
+              Real-Time Prices
+            </h2>
+            <div id="price-table-container" class="price-table-container">
+              <!-- Price table will be inserted here by JavaScript -->
+            </div>
+          </section>
+
           <!-- Live Signal Panel -->
-          <section class="bg-white rounded-lg shadow-md p-6">
+          <section
+            id="signals-section"
+            class="bg-white rounded-lg shadow-md p-6"
+          >
             <h2 class="text-xl font-semibold mb-4 flex items-center">
               <i class="fas fa-satellite-dish mr-2 text-green-600"></i>
               Live Signals

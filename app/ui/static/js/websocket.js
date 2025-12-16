@@ -57,6 +57,17 @@ class WebSocketClient {
     this.socket.on("watchlist_update", (data) =>
       this.handleEvent("watchlist_update", data)
     );
+    this.socket.on("price_update", (data) => {
+      console.log("DEBUG: Received price_update event:", data);
+      console.log(
+        "DEBUG: Event data structure:",
+        JSON.stringify(data, null, 2)
+      );
+      this.handleEvent("price_update", data);
+    });
+    this.socket.on("room_joined", (data) => {
+      console.log("DEBUG: Successfully joined room:", data.room);
+    });
     this.socket.on("error", (data) => this.handleEvent("error", data));
   }
 
@@ -83,8 +94,9 @@ class WebSocketClient {
     // Trigger connect event
     this.handleEvent("connect", { connected: true });
 
-    // Join the main room for general updates
-    this.socket.emit("join", { room: "main" });
+    // Join the price updates room (matching backend room name)
+    this.socket.emit("join_room", { room: "prices" });
+    console.log("DEBUG: Joined prices room");
   }
 
   /**

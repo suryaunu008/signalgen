@@ -77,7 +77,8 @@ class SocketIOBroadcaster:
             'rules': 'rules',
             'watchlists': 'watchlists',
             'ibkr': 'ibkr_status',
-            'errors': 'errors'
+            'errors': 'errors',
+            'prices': 'prices'
         }
         
         # Event loop reference for thread-safe broadcasting
@@ -256,6 +257,94 @@ class SocketIOBroadcaster:
                 'message': f'Failed to broadcast signal: {str(e)}',
                 'data': signal_data
             })
+    
+    async def broadcast_price_update(self, price_data: Dict[str, Any]) -> None:
+        """
+        Broadcast real-time price updates to all connected clients.
+        
+        Args:
+            price_data: Price data with format:
+                {
+                    "symbol": "AAPL",
+                    "price": 189.20,
+                    "bid": 189.18,
+                    "ask": 189.22,
+                    "last": 189.20,
+                    "timestamp": "2025-12-16T09:31:00Z"
+                }
+        """
+        try:
+            # Validate required fields
+            if 'symbol' not in price_data or 'price' not in price_data:
+                raise ValueError("Price data must contain 'symbol' and 'price' fields")
+            
+            # Skip if no connected clients
+            if not self.connected_clients:
+                return
+            
+            # Format price event
+            price_event = {
+                "symbol": price_data['symbol'],
+                "price": price_data['price'],
+                "bid": price_data.get('bid'),
+                "ask": price_data.get('ask'),
+                "last": price_data.get('last'),
+                "timestamp": price_data.get('timestamp', datetime.utcnow().isoformat())
+            }
+            
+            # Broadcast to prices room
+            await self.sio.emit('price_update', price_event, room=self.ROOMS['prices'])
+            
+            self.logger.debug(f"Price update broadcasted: {price_data.get('symbol')} @ {price_data.get('price')}")
+            
+        except Exception as e:
+            self.logger.error(f"Error broadcasting price update: {e}")
+    
+    def broadcast_price_update_sync(self, price_data: Dict[str, Any]) -> None:
+        """
+        Synchronous wrapper for broadcasting price updates from non-async contexts.
+        
+        This method handles thread-safe emission of price updates using threading
+        to call the async broadcast method.
+        
+        Args:
+            price_data: Price data to broadcast
+        """
+        try:
+            # Validate required fields
+            if 'symbol' not in price_data or 'price' not in price_data:
+                self.logger.warning("Invalid price data - missing symbol or price")
+                return
+            
+            # Use threading to call emit in a thread-safe way
+            import threading
+            def do_emit():
+                try:
+                    import asyncio
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            asyncio.run_coroutine_threadsafe(
+                                self.broadcast_price_update(price_data),
+                                loop
+                            )
+                        else:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            loop.run_until_complete(self.broadcast_price_update(price_data))
+                            loop.close()
+                    except RuntimeError:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(self.broadcast_price_update(price_data))
+                        loop.close()
+                except Exception as e:
+                    self.logger.error(f"Error emitting price in thread: {e}")
+            
+            threading.Thread(target=do_emit, daemon=True).start()
+            
+        except Exception as e:
+            self.logger.error(f"Error in sync price broadcast: {e}")
     
     async def broadcast_engine_status(self, status: Dict[str, Any]) -> None:
         """

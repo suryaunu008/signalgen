@@ -14,6 +14,7 @@ class SignalGenApp {
     this.signals = [];
     this.maxSignals = 50; // Keep only last 50 signals in UI
     this.statusPollInterval = null; // For polling engine status
+    this.priceData = {}; // Store current price data for all symbols
 
     // Bind methods to maintain context
     this.init = this.init.bind(this);
@@ -30,6 +31,10 @@ class SignalGenApp {
     this.showToast = this.showToast.bind(this);
     this.showLoading = this.showLoading.bind(this);
     this.hideLoading = this.hideLoading.bind(this);
+
+    // Price table methods
+    this.initializePriceTable = this.initializePriceTable.bind(this);
+    this.updatePriceTable = this.updatePriceTable.bind(this);
   }
 
   /**
@@ -47,6 +52,9 @@ class SignalGenApp {
 
       // Setup WebSocket listeners
       this.setupWebSocketListeners();
+
+      // Initialize price table
+      this.initializePriceTable();
 
       // Connect to WebSocket
       WS.connect();
@@ -201,6 +209,13 @@ class SignalGenApp {
       this.updateWatchlistInList(watchlist);
     });
 
+    WS.on("price_update", (priceData) => {
+      console.log("DEBUG: App.js received price_update:", priceData);
+      console.log("DEBUG: Price data type:", typeof priceData);
+      console.log("DEBUG: Price data keys:", Object.keys(priceData || {}));
+      this.updatePriceTable(priceData);
+    });
+
     WS.on("error", (error) => {
       this.showToast(error.message || "An error occurred", "error");
     });
@@ -273,6 +288,7 @@ class SignalGenApp {
    * Update engine status display
    */
   updateEngineStatus(status) {
+    const wasRunning = this.engineRunning;
     this.engineRunning = status.is_running;
 
     // Update engine status indicator
@@ -319,6 +335,11 @@ class SignalGenApp {
 
     startBtn.disabled = status.is_running;
     stopBtn.disabled = !status.is_running;
+
+    // If engine just transitioned from running to stopped, clear price table (frontend only)
+    if (wasRunning && !status.is_running) {
+      this.clearPriceTable();
+    }
 
     // Update current selections
     if (status.active_rule) {
@@ -581,6 +602,9 @@ class SignalGenApp {
       this.showLoading();
 
       await API.stopEngine();
+
+      // Clear real-time prices on frontend when engine stops
+      this.clearPriceTable();
 
       this.showToast("Engine stopped successfully", "success");
     } catch (error) {
@@ -1056,6 +1080,236 @@ class SignalGenApp {
    */
   hideLoading() {
     document.getElementById("loading-overlay").classList.add("hidden");
+  }
+
+  /**
+   * Initialize the price table structure
+   */
+  initializePriceTable() {
+    // Get the price table container
+    const priceTableContainer = document.getElementById(
+      "price-table-container"
+    );
+    if (!priceTableContainer) {
+      console.error("Price table container not found");
+      return;
+    }
+
+    // Initialize with empty table
+    priceTableContainer.innerHTML = `
+      <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Symbol</th>
+              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Price</th>
+              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Change</th>
+              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Update</th>
+            </tr>
+          </thead>
+          <tbody id="price-table-body" class="bg-white divide-y divide-gray-200">
+            <tr>
+              <td colspan="4" class="px-6 py-4 text-center text-gray-500">No price data available</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  /**
+   * Update the price table with new price data
+   * @param {Object} priceData - Price update data containing symbol, price, and timestamp
+   */
+  updatePriceTable(priceData) {
+    console.log("DEBUG: updatePriceTable called with:", priceData);
+
+    // Check if priceData has the expected structure
+    if (!priceData) {
+      console.error("DEBUG: priceData is null or undefined");
+      return;
+    }
+
+    const { symbol, price, timestamp } = priceData;
+
+    if (!symbol || !price) {
+      console.error("DEBUG: Missing symbol or price in priceData:", priceData);
+      return;
+    }
+
+    console.log(
+      "DEBUG: Extracted symbol:",
+      symbol,
+      "price:",
+      price,
+      "timestamp:",
+      timestamp
+    );
+
+    // Store previous price for change calculation
+    const previousPrice = this.priceData[symbol]
+      ? this.priceData[symbol].price
+      : null;
+
+    // Update price data
+    this.priceData[symbol] = {
+      price: price,
+      timestamp: timestamp || new Date().toISOString(),
+      previousPrice: previousPrice,
+    };
+
+    // Get or create table body
+    const tableBody = document.getElementById("price-table-body");
+    if (!tableBody) return;
+
+    // Check if row already exists for this symbol
+    let existingRow = document.getElementById(`price-row-${symbol}`);
+
+    if (existingRow) {
+      // Update existing row
+      this.updatePriceRow(existingRow, symbol, price, previousPrice, timestamp);
+    } else {
+      // Create new row
+      this.createPriceRow(symbol, price, previousPrice, timestamp);
+    }
+
+    // Sort table by symbol
+    this.sortPriceTable();
+  }
+
+  /**
+   * Create a new price row in the table
+   * @param {string} symbol - Stock symbol
+   * @param {number} price - Current price
+   * @param {number} previousPrice - Previous price for change calculation
+   * @param {string} timestamp - Update timestamp
+   */
+  createPriceRow(symbol, price, previousPrice, timestamp) {
+    const tableBody = document.getElementById("price-table-body");
+    if (!tableBody) return;
+
+    // Remove "no data" message if this is the first row
+    if (
+      tableBody.children.length === 1 &&
+      tableBody.children[0].children.length === 1
+    ) {
+      tableBody.innerHTML = "";
+    }
+
+    const row = document.createElement("tr");
+    row.id = `price-row-${symbol}`;
+
+    const change = previousPrice ? price - previousPrice : 0;
+    const changePercent = previousPrice
+      ? ((change / previousPrice) * 100).toFixed(2)
+      : 0;
+    const changeClass =
+      change > 0
+        ? "text-green-600"
+        : change < 0
+        ? "text-red-600"
+        : "text-gray-600";
+    const changeSymbol = change > 0 ? "▲" : change < 0 ? "▼" : "•";
+
+    row.innerHTML = `
+      <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${symbol}</td>
+      <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">$${price.toFixed(
+        2
+      )}</td>
+      <td class="px-6 py-4 whitespace-nowrap text-sm ${changeClass}">
+        <span class="change-symbol">${changeSymbol}</span>
+        <span class="change-amount">${Math.abs(change).toFixed(2)}</span>
+        <span class="change-percent">(${changePercent}%)</span>
+      </td>
+      <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${new Date(
+        timestamp
+      ).toLocaleTimeString()}</td>
+    `;
+
+    tableBody.appendChild(row);
+  }
+
+  /**
+   * Update an existing price row
+   * @param {HTMLElement} row - The table row element
+   * @param {string} symbol - Stock symbol
+   * @param {number} price - Current price
+   * @param {number} previousPrice - Previous price for change calculation
+   * @param {string} timestamp - Update timestamp
+   */
+  updatePriceRow(row, symbol, price, previousPrice, timestamp) {
+    const change = previousPrice ? price - previousPrice : 0;
+    const changePercent = previousPrice
+      ? ((change / previousPrice) * 100).toFixed(2)
+      : 0;
+    const changeClass =
+      change > 0
+        ? "text-green-600"
+        : change < 0
+        ? "text-red-600"
+        : "text-gray-600";
+    const changeSymbol = change > 0 ? "▲" : change < 0 ? "▼" : "•";
+
+    // Update price cell
+    const priceCell = row.children[1];
+    priceCell.textContent = `$${price.toFixed(2)}`;
+
+    // Update change cell with animation
+    const changeCell = row.children[2];
+    changeCell.className = `px-6 py-4 whitespace-nowrap text-sm ${changeClass}`;
+    changeCell.innerHTML = `
+      <span class="change-symbol">${changeSymbol}</span>
+      <span class="change-amount">${Math.abs(change).toFixed(2)}</span>
+      <span class="change-percent">(${changePercent}%)</span>
+    `;
+
+    // Add flash animation for price changes
+    if (previousPrice && price !== previousPrice) {
+      row.classList.add("price-flash");
+      setTimeout(() => {
+        row.classList.remove("price-flash");
+      }, 1000);
+    }
+
+    // Update timestamp
+    const timestampCell = row.children[3];
+    timestampCell.textContent = new Date(timestamp).toLocaleTimeString();
+  }
+
+  /**
+   * Sort the price table by symbol
+   */
+  sortPriceTable() {
+    const tableBody = document.getElementById("price-table-body");
+    if (!tableBody) return;
+
+    const rows = Array.from(tableBody.children);
+    rows.sort((a, b) => {
+      const symbolA = a.id.replace("price-row-", "");
+      const symbolB = b.id.replace("price-row-", "");
+      return symbolA.localeCompare(symbolB);
+    });
+
+    // Re-append sorted rows
+    rows.forEach((row) => tableBody.appendChild(row));
+  }
+
+  /**
+   * Clear all real-time prices from the UI (frontend only)
+   */
+  clearPriceTable() {
+    // Reset in-memory price cache
+    this.priceData = {};
+
+    // Reset table body to empty state
+    const tableBody = document.getElementById("price-table-body");
+    if (tableBody) {
+      tableBody.innerHTML = `
+        <tr>
+          <td colspan="4" class="px-6 py-4 text-center text-gray-500">No price data available</td>
+        </tr>
+      `;
+    }
   }
 }
 
