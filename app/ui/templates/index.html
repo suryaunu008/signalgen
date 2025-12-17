@@ -220,6 +220,8 @@
                         <option value="EMA50">EMA50</option>
                       </optgroup>
                       <optgroup label="MACD">
+                        <option value="MACD">MACD</option>
+                        <option value="MACD_SIGNAL">MACD_SIGNAL</option>
                         <option value="MACD_HIST">MACD_HIST</option>
                         <option value="MACD_HIST_PREV">MACD_HIST_PREV</option>
                       </optgroup>
@@ -231,11 +233,16 @@
                         <option value="ADX5">ADX5</option>
                         <option value="ADX5_PREV">ADX5_PREV</option>
                       </optgroup>
+                      <optgroup label="Bollinger Bands">
+                        <option value="BB_UPPER">BB_UPPER</option>
+                        <option value="BB_MIDDLE">BB_MIDDLE</option>
+                        <option value="BB_LOWER">BB_LOWER</option>
+                        <option value="BB_WIDTH">BB_WIDTH</option>
+                      </optgroup>
                       <optgroup label="Calculated Metrics">
                         <option value="PRICE_EMA20_DIFF_PCT">
                           PRICE_EMA20_DIFF_PCT
                         </option>
-                        <option value="TOLERANCE">TOLERANCE</option>
                       </optgroup>
                       <optgroup label="Numeric Value">
                         <option value="_CUSTOM_">Custom Number...</option>
@@ -276,6 +283,8 @@
                         <option value="EMA50">EMA50</option>
                       </optgroup>
                       <optgroup label="MACD">
+                        <option value="MACD">MACD</option>
+                        <option value="MACD_SIGNAL">MACD_SIGNAL</option>
                         <option value="MACD_HIST">MACD_HIST</option>
                         <option value="MACD_HIST_PREV">MACD_HIST_PREV</option>
                       </optgroup>
@@ -287,11 +296,16 @@
                         <option value="ADX5">ADX5</option>
                         <option value="ADX5_PREV">ADX5_PREV</option>
                       </optgroup>
+                      <optgroup label="Bollinger Bands">
+                        <option value="BB_UPPER">BB_UPPER</option>
+                        <option value="BB_MIDDLE">BB_MIDDLE</option>
+                        <option value="BB_LOWER">BB_LOWER</option>
+                        <option value="BB_WIDTH">BB_WIDTH</option>
+                      </optgroup>
                       <optgroup label="Calculated Metrics">
                         <option value="PRICE_EMA20_DIFF_PCT">
                           PRICE_EMA20_DIFF_PCT
                         </option>
-                        <option value="TOLERANCE">TOLERANCE</option>
                       </optgroup>
                       <optgroup label="Numeric Value">
                         <option value="_CUSTOM_">Custom Number...</option>
@@ -482,6 +496,63 @@
           class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"
         ></div>
         <span class="text-lg">Loading...</span>
+      </div>
+    </div>
+
+    <!-- Rule Detail Modal -->
+    <div
+      id="rule-detail-modal"
+      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden"
+    >
+      <div
+        class="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto"
+      >
+        <div
+          class="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex justify-between items-center"
+        >
+          <h3 class="text-lg font-semibold text-gray-900">Rule Details</h3>
+          <button
+            id="close-rule-modal"
+            class="text-gray-400 hover:text-gray-600 focus:outline-none"
+          >
+            <i class="fas fa-times text-xl"></i>
+          </button>
+        </div>
+        <div class="px-6 py-4">
+          <div class="space-y-4">
+            <div>
+              <h4 class="text-sm font-medium text-gray-500">Rule Name</h4>
+              <p id="modal-rule-name" class="mt-1 text-sm text-gray-900"></p>
+            </div>
+            <div>
+              <h4 class="text-sm font-medium text-gray-500">Rule Type</h4>
+              <p id="modal-rule-type" class="mt-1 text-sm text-gray-900"></p>
+            </div>
+            <div>
+              <h4 class="text-sm font-medium text-gray-500">Logic Operator</h4>
+              <p id="modal-rule-logic" class="mt-1 text-sm text-gray-900"></p>
+            </div>
+            <div>
+              <h4 class="text-sm font-medium text-gray-500">Conditions</h4>
+              <div id="modal-rule-conditions" class="mt-1 space-y-2"></div>
+            </div>
+            <div>
+              <h4 class="text-sm font-medium text-gray-500">Cooldown Period</h4>
+              <p
+                id="modal-rule-cooldown"
+                class="mt-1 text-sm text-gray-900"
+              ></p>
+            </div>
+            <div>
+              <h4 class="text-sm font-medium text-gray-500">Creation Date</h4>
+              <p id="modal-rule-created" class="mt-1 text-sm text-gray-900"></p>
+            </div>
+            <div>
+              <h4 class="text-sm font-medium text-gray-500">Last Updated</h4>
+              <p id="modal-rule-updated" class="mt-1 text-sm text-gray-900"></p>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 

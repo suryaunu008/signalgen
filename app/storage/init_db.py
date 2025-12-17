@@ -78,7 +78,7 @@ def _seed_default_rule(repo: SQLiteRepository) -> None:
             {"left": "EMA6", "op": "CROSS_UP", "right": "EMA20"},
             
             {"left": "PRICE", "op": ">=", "right": "EMA20"},
-            {"left": "PRICE_EMA20_DIFF_PCT", "op": "<=", "right": "TOLERANCE"},
+            {"left": "PRICE_EMA20_DIFF_PCT", "op": "<=", "right": 0.01},
             
             {"left": "MACD_HIST", "op": ">", "right": "MACD_HIST_PREV"},
             {"left": "MACD_HIST", "op": ">", "right": 0},
