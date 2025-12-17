@@ -2,21 +2,29 @@
 Indicator Engine Module
 
 This module provides technical indicator calculations for the SignalGen scalping system.
-It calculates moving averages from price data for multiple symbols with thread-safe operations.
+It calculates various technical indicators from price/candle data for multiple symbols.
 
 Key Features:
 - Multi-symbol support (up to 5 symbols for MVP)
-- Moving averages (MA5, MA10, MA20) - required for MVP
+- Moving averages (MA20, MA50, MA100, MA200, EMA6, EMA9, EMA10, EMA13, EMA20, EMA21, EMA34, EMA50)
+- MACD (Moving Average Convergence Divergence)
+- RSI (Relative Strength Index)
+- ADX (Average Directional Index)
+- Bollinger Bands
+- Previous value tracking for all indicators (for CROSS_UP/CROSS_DOWN)
 - Rolling data management for efficient calculations
 - Thread-safe operations for async environment
 - Integration with rule engine for signal generation
 
-MVP Requirements:
-- Support PRICE, MA5, MA10, MA20 indicators
-- Maintain rolling data for each symbol
-- Handle data updates from IBKR (price bars)
-- Return indicator values in format compatible with rule engine
-- Thread-safe operations for async scalping engine
+Supported Indicators:
+- PRICE, PREV_CLOSE, PREV_OPEN (candle data)
+- MA20, MA50, MA100, MA200 (Simple Moving Averages)
+- EMA6, EMA9, EMA10, EMA13, EMA20, EMA21, EMA34, EMA50 (Exponential Moving Averages)
+- MACD, MACD_SIGNAL, MACD_HIST, MACD_HIST_PREV (MACD indicators)
+- RSI14, RSI14_PREV (14-period RSI)
+- ADX5, ADX5_PREV (5-period ADX)
+- BB_UPPER, BB_MIDDLE, BB_LOWER, BB_WIDTH (Bollinger Bands)
+- PRICE_EMA20_DIFF_PCT (calculated metric)
 """
 
 import threading
@@ -34,21 +42,30 @@ class IndicatorEngine:
     with thread-safe operations suitable for async environments.
     """
     
-    def __init__(self, max_history: int = 20):
+    def __init__(self, max_history: int = 250):
         """
         Initialize the indicator engine.
         
         Args:
-            max_history: Maximum number of price periods to store (default 20 for MA20)
+            max_history: Maximum number of candle periods to store (default 250 for MA200)
         """
         self.max_history = max_history
-        self.price_data: Dict[str, deque] = {}  # Symbol -> deque of (price, timestamp)
+        self.candle_data: Dict[str, deque] = {}  # Symbol -> deque of candle dicts (OHLC)
         self.indicators: Dict[str, Dict[str, float]] = {}  # Symbol -> indicator values
+        self.prev_indicators: Dict[str, Dict[str, float]] = {}  # Symbol -> previous indicator values
         self.lock = threading.RLock()  # Reentrant lock for thread safety
         self.logger = logging.getLogger(__name__)
         
-        # Supported MA periods for MVP
-        self.ma_periods = [5, 10, 20]
+        # Supported indicator periods
+        self.ma_periods = [20, 50, 100, 200]
+        self.ema_periods = [6, 9, 10, 13, 20, 21, 34, 50]
+        self.rsi_period = 14
+        self.adx_period = 5
+        self.macd_fast = 12
+        self.macd_slow = 26
+        self.macd_signal = 9
+        self.bb_period = 20
+        self.bb_std_dev = 2
     
     def initialize_symbol(self, symbol: str) -> None:
         """
@@ -58,9 +75,10 @@ class IndicatorEngine:
             symbol: Stock symbol to initialize (e.g., "AAPL")
         """
         with self.lock:
-            if symbol not in self.price_data:
-                self.price_data[symbol] = deque(maxlen=self.max_history)
+            if symbol not in self.candle_data:
+                self.candle_data[symbol] = deque(maxlen=self.max_history)
                 self.indicators[symbol] = {}
+                self.prev_indicators[symbol] = {}
                 self.logger.debug(f"Initialized indicator data for symbol: {symbol}")
     
     def clear_symbol_data(self, symbol: str) -> None:
@@ -71,17 +89,68 @@ class IndicatorEngine:
             symbol: Stock symbol to clear
         """
         with self.lock:
-            if symbol in self.price_data:
-                del self.price_data[symbol]
-                self.logger.debug(f"Cleared price data for symbol: {symbol}")
+            if symbol in self.candle_data:
+                del self.candle_data[symbol]
+                self.logger.debug(f"Cleared candle data for symbol: {symbol}")
             
             if symbol in self.indicators:
                 del self.indicators[symbol]
                 self.logger.debug(f"Cleared indicator data for symbol: {symbol}")
+            
+            if symbol in self.prev_indicators:
+                del self.prev_indicators[symbol]
+                self.logger.debug(f"Cleared previous indicator data for symbol: {symbol}")
+    
+    def update_candle_data(self, symbol: str, open_price: float, high: float, low: float, 
+                          close: float, timestamp: Optional[float] = None) -> None:
+        """
+        Add new candle data for a symbol.
+        
+        Args:
+            symbol: Stock symbol
+            open_price: Candle open price
+            high: Candle high price
+            low: Candle low price
+            close: Candle close price
+            timestamp: Unix timestamp (defaults to current time)
+            
+        Raises:
+            ValueError: If price is invalid
+        """
+        if not all(isinstance(p, (int, float)) and p > 0 for p in [open_price, high, low, close]):
+            raise ValueError(f"Invalid price values: O={open_price}, H={high}, L={low}, C={close}")
+        
+        if timestamp is None:
+            timestamp = time.time()
+        
+        with self.lock:
+            # Initialize symbol if not exists
+            if symbol not in self.candle_data:
+                self.initialize_symbol(symbol)
+            
+            # Store previous indicator values before updating
+            if symbol in self.indicators and self.indicators[symbol]:
+                self.prev_indicators[symbol] = self.indicators[symbol].copy()
+            
+            # Add new candle data
+            candle = {
+                'open': open_price,
+                'high': high,
+                'low': low,
+                'close': close,
+                'timestamp': timestamp
+            }
+            self.candle_data[symbol].append(candle)
+            
+            # Calculate indicators for this symbol
+            self._calculate_indicators_for_symbol(symbol)
+            
+            self.logger.debug(f"Updated candle data for {symbol}: O={open_price}, H={high}, L={low}, C={close}")
     
     def update_price_data(self, symbol: str, price: float, timestamp: Optional[float] = None) -> None:
         """
-        Add new price data for a symbol.
+        Add new price data for a symbol (backward compatibility).
+        Creates a candle with price as all OHLC values.
         
         Args:
             symbol: Stock symbol
@@ -91,47 +160,48 @@ class IndicatorEngine:
         Raises:
             ValueError: If price is invalid
         """
-        if not isinstance(price, (int, float)) or price <= 0:
-            raise ValueError(f"Invalid price value: {price}")
+        self.update_candle_data(symbol, price, price, price, price, timestamp)
+    
+    def bulk_update_candle_data(self, symbol: str, candles: List[Dict]) -> None:
+        """
+        Bulk update candle data for a symbol (used for historical data).
         
-        if timestamp is None:
-            timestamp = time.time()
-        
+        Args:
+            symbol: Stock symbol
+            candles: List of candle dicts with keys: open, high, low, close, timestamp
+        """
         with self.lock:
             # Initialize symbol if not exists
-            if symbol not in self.price_data:
+            if symbol not in self.candle_data:
                 self.initialize_symbol(symbol)
             
-            # Add new price data
-            self.price_data[symbol].append((price, timestamp))
+            # Add all historical candles
+            for candle in candles:
+                if all(k in candle for k in ['open', 'high', 'low', 'close']):
+                    self.candle_data[symbol].append(candle)
             
-            # Calculate indicators for this symbol
-            self._calculate_indicators_for_symbol(symbol)
+            # Calculate indicators once after all data is loaded
+            self._calculate_indicators_for_symbol(symbol, suppress_warnings=True)
             
-            self.logger.debug(f"Updated price data for {symbol}: {price} at {timestamp}")
+            self.logger.info(f"Bulk updated {len(candles)} candles for {symbol}")
     
     def bulk_update_price_data(self, symbol: str, prices: List[tuple]) -> None:
         """
-        Bulk update price data for a symbol (used for historical data).
+        Bulk update price data for a symbol (backward compatibility).
         
         Args:
             symbol: Stock symbol
             prices: List of (price, timestamp) tuples in chronological order
         """
-        with self.lock:
-            # Initialize symbol if not exists
-            if symbol not in self.price_data:
-                self.initialize_symbol(symbol)
-            
-            # Add all historical prices
-            for price, timestamp in prices:
-                if isinstance(price, (int, float)) and price > 0:
-                    self.price_data[symbol].append((price, timestamp))
-            
-            # Calculate indicators once after all data is loaded (suppress warnings during bulk load)
-            self._calculate_indicators_for_symbol(symbol, suppress_warnings=True)
-            
-            self.logger.info(f"Bulk updated {len(prices)} price points for {symbol}")
+        candles = [{
+            'open': price,
+            'high': price,
+            'low': price,
+            'close': price,
+            'timestamp': ts
+        } for price, ts in prices if isinstance(price, (int, float)) and price > 0]
+        
+        self.bulk_update_candle_data(symbol, candles)
     
     def get_indicators(self, symbol: str) -> Dict[str, float]:
         """
@@ -155,7 +225,7 @@ class IndicatorEngine:
     
     def calculate_moving_averages(self, prices: List[float], periods: List[int]) -> Dict[int, float]:
         """
-        Calculate moving averages for given periods.
+        Calculate simple moving averages for given periods.
         
         Args:
             prices: List of price values (chronological order, oldest first)
@@ -183,6 +253,221 @@ class IndicatorEngine:
         
         return results
     
+    def calculate_ema(self, prices: List[float], period: int) -> float:
+        """
+        Calculate Exponential Moving Average for a given period.
+        
+        Args:
+            prices: List of price values (chronological order, oldest first)
+            period: EMA period
+            
+        Returns:
+            EMA value
+            
+        Raises:
+            ValueError: If insufficient data
+        """
+        if not prices or len(prices) < period:
+            raise ValueError(f"Insufficient data for EMA{period}: need {period}, have {len(prices)}")
+        
+        multiplier = 2 / (period + 1)
+        
+        # Start with SMA as initial EMA
+        ema = sum(prices[:period]) / period
+        
+        # Calculate EMA for remaining prices
+        for price in prices[period:]:
+            ema = (price * multiplier) + (ema * (1 - multiplier))
+        
+        return ema
+    
+    def calculate_rsi(self, prices: List[float], period: int = 14) -> float:
+        """
+        Calculate Relative Strength Index.
+        
+        Args:
+            prices: List of price values (chronological order, oldest first)
+            period: RSI period (default 14)
+            
+        Returns:
+            RSI value (0-100)
+            
+        Raises:
+            ValueError: If insufficient data
+        """
+        if len(prices) < period + 1:
+            raise ValueError(f"Insufficient data for RSI{period}: need {period + 1}, have {len(prices)}")
+        
+        # Calculate price changes
+        deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
+        
+        # Separate gains and losses
+        gains = [d if d > 0 else 0 for d in deltas]
+        losses = [-d if d < 0 else 0 for d in deltas]
+        
+        # Calculate average gain and loss
+        avg_gain = sum(gains[-period:]) / period
+        avg_loss = sum(losses[-period:]) / period
+        
+        if avg_loss == 0:
+            return 100.0
+        
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        
+        return rsi
+    
+    def calculate_macd(self, prices: List[float], fast: int = 12, slow: int = 26, signal: int = 9) -> Dict[str, float]:
+        """
+        Calculate MACD (Moving Average Convergence Divergence).
+        
+        Args:
+            prices: List of price values (chronological order, oldest first)
+            fast: Fast EMA period (default 12)
+            slow: Slow EMA period (default 26)
+            signal: Signal line period (default 9)
+            
+        Returns:
+            Dict with 'macd', 'signal', 'histogram'
+            
+        Raises:
+            ValueError: If insufficient data
+        """
+        if len(prices) < slow + signal:
+            raise ValueError(f"Insufficient data for MACD: need {slow + signal}, have {len(prices)}")
+        
+        # Calculate MACD line (fast EMA - slow EMA)
+        fast_ema = self.calculate_ema(prices, fast)
+        slow_ema = self.calculate_ema(prices, slow)
+        macd_line = fast_ema - slow_ema
+        
+        # For signal line, we need MACD values history
+        # Simplified: calculate signal from recent price-based approximation
+        # In production, should store MACD history
+        macd_values = []
+        for i in range(slow, len(prices)):
+            f_ema = self.calculate_ema(prices[:i+1], fast)
+            s_ema = self.calculate_ema(prices[:i+1], slow)
+            macd_values.append(f_ema - s_ema)
+        
+        if len(macd_values) < signal:
+            signal_line = macd_line  # Fallback
+        else:
+            signal_line = sum(macd_values[-signal:]) / signal
+        
+        histogram = macd_line - signal_line
+        
+        return {
+            'macd': macd_line,
+            'signal': signal_line,
+            'histogram': histogram
+        }
+    
+    def calculate_adx(self, candles: List[Dict], period: int = 5) -> float:
+        """
+        Calculate ADX (Average Directional Index) - simplified version.
+        
+        Args:
+            candles: List of candle dicts with high, low, close
+            period: ADX period (default 5)
+            
+        Returns:
+            ADX value
+            
+        Raises:
+            ValueError: If insufficient data
+        """
+        if len(candles) < period + 1:
+            raise ValueError(f"Insufficient data for ADX{period}: need {period + 1}, have {len(candles)}")
+        
+        # Simplified ADX calculation
+        # Calculate True Range and Directional Movement
+        tr_values = []
+        dm_plus = []
+        dm_minus = []
+        
+        for i in range(1, len(candles)):
+            high = candles[i]['high']
+            low = candles[i]['low']
+            prev_close = candles[i-1]['close']
+            prev_high = candles[i-1]['high']
+            prev_low = candles[i-1]['low']
+            
+            # True Range
+            tr = max(
+                high - low,
+                abs(high - prev_close),
+                abs(low - prev_close)
+            )
+            tr_values.append(tr)
+            
+            # Directional Movement
+            up_move = high - prev_high
+            down_move = prev_low - low
+            
+            dm_plus.append(up_move if up_move > down_move and up_move > 0 else 0)
+            dm_minus.append(down_move if down_move > up_move and down_move > 0 else 0)
+        
+        if len(tr_values) < period:
+            return 0.0
+        
+        # Average over period
+        avg_tr = sum(tr_values[-period:]) / period
+        avg_dm_plus = sum(dm_plus[-period:]) / period
+        avg_dm_minus = sum(dm_minus[-period:]) / period
+        
+        if avg_tr == 0:
+            return 0.0
+        
+        di_plus = (avg_dm_plus / avg_tr) * 100
+        di_minus = (avg_dm_minus / avg_tr) * 100
+        
+        di_sum = di_plus + di_minus
+        if di_sum == 0:
+            return 0.0
+        
+        dx = abs(di_plus - di_minus) / di_sum * 100
+        
+        return dx
+    
+    def calculate_bollinger_bands(self, prices: List[float], period: int = 20, std_dev: float = 2) -> Dict[str, float]:
+        """
+        Calculate Bollinger Bands.
+        
+        Args:
+            prices: List of price values (chronological order, oldest first)
+            period: BB period (default 20)
+            std_dev: Number of standard deviations (default 2)
+            
+        Returns:
+            Dict with 'upper', 'middle', 'lower', 'width'
+            
+        Raises:
+            ValueError: If insufficient data
+        """
+        if len(prices) < period:
+            raise ValueError(f"Insufficient data for BB{period}: need {period}, have {len(prices)}")
+        
+        # Middle band is SMA
+        recent_prices = prices[-period:]
+        middle = sum(recent_prices) / period
+        
+        # Calculate standard deviation
+        variance = sum((p - middle) ** 2 for p in recent_prices) / period
+        std = variance ** 0.5
+        
+        # Upper and lower bands
+        upper = middle + (std_dev * std)
+        lower = middle - (std_dev * std)
+        width = upper - lower
+        
+        return {
+            'upper': upper,
+            'middle': middle,
+            'lower': lower,
+            'width': width
+        }
+    
     def _calculate_indicators_for_symbol(self, symbol: str, suppress_warnings: bool = False) -> None:
         """
         Calculate all indicators for a specific symbol.
@@ -191,35 +476,88 @@ class IndicatorEngine:
             symbol: Stock symbol to calculate indicators for
             suppress_warnings: If True, don't log warnings for insufficient data
         """
-        if symbol not in self.price_data:
+        if symbol not in self.candle_data:
             return
         
-        price_deque = self.price_data[symbol]
+        candles = list(self.candle_data[symbol])
         
-        if not price_deque:
+        if not candles:
             return
         
-        # Extract prices from deque (chronological order)
-        prices = [item[0] for item in price_deque]
-        current_price = prices[-1]  # Latest price
+        # Extract price data
+        closes = [c['close'] for c in candles]
+        opens = [c['open'] for c in candles]
+        current_price = closes[-1]
         
         # Initialize indicators dict for this symbol
-        self.indicators[symbol] = {"PRICE": current_price}
+        indicators = {}
+        
+        # Basic price data
+        indicators['PRICE'] = current_price
+        
+        # Previous candle data
+        if len(candles) >= 2:
+            indicators['PREV_CLOSE'] = candles[-2]['close']
+            indicators['PREV_OPEN'] = candles[-2]['open']
         
         try:
-            # Calculate moving averages
-            ma_values = self.calculate_moving_averages(prices, self.ma_periods)
-            
-            # Add MA values to indicators
+            # Simple Moving Averages
+            ma_values = self.calculate_moving_averages(closes, self.ma_periods)
             for period, ma_value in ma_values.items():
-                self.indicators[symbol][f"MA{period}"] = ma_value
-                
+                indicators[f'MA{period}'] = ma_value
+            
+            # Exponential Moving Averages
+            for period in self.ema_periods:
+                if len(closes) >= period:
+                    ema_value = self.calculate_ema(closes, period)
+                    indicators[f'EMA{period}'] = ema_value
+            
+            # MACD
+            if len(closes) >= self.macd_slow + self.macd_signal:
+                macd_result = self.calculate_macd(closes, self.macd_fast, self.macd_slow, self.macd_signal)
+                indicators['MACD'] = macd_result['macd']
+                indicators['MACD_SIGNAL'] = macd_result['signal']
+                indicators['MACD_HIST'] = macd_result['histogram']
+            
+            # RSI
+            if len(closes) >= self.rsi_period + 1:
+                rsi_value = self.calculate_rsi(closes, self.rsi_period)
+                indicators['RSI14'] = rsi_value
+            
+            # ADX
+            if len(candles) >= self.adx_period + 1:
+                adx_value = self.calculate_adx(candles, self.adx_period)
+                indicators['ADX5'] = adx_value
+            
+            # Bollinger Bands
+            if len(closes) >= self.bb_period:
+                bb_result = self.calculate_bollinger_bands(closes, self.bb_period, self.bb_std_dev)
+                indicators['BB_UPPER'] = bb_result['upper']
+                indicators['BB_MIDDLE'] = bb_result['middle']
+                indicators['BB_LOWER'] = bb_result['lower']
+                indicators['BB_WIDTH'] = bb_result['width']
+            
+            # Calculated metrics
+            if 'EMA20' in indicators:
+                ema20 = indicators['EMA20']
+                if ema20 != 0:
+                    price_ema20_diff_pct = abs(current_price - ema20) / ema20
+                    indicators['PRICE_EMA20_DIFF_PCT'] = price_ema20_diff_pct
+            
+            # Add previous values with _PREV suffix
+            if symbol in self.prev_indicators:
+                prev = self.prev_indicators[symbol]
+                for key, value in prev.items():
+                    if key not in ['PRICE_EMA20_DIFF_PCT']:  # Don't duplicate calculated metrics
+                        indicators[f'{key}_PREV'] = value
+            
         except ValueError as e:
             # Handle insufficient data gracefully
             if not suppress_warnings:
                 self.logger.warning(f"Insufficient data for {symbol}: {e}")
-            # Keep only PRICE if insufficient data for MAs
-            pass
+        
+        # Store calculated indicators
+        self.indicators[symbol] = indicators
     
     def get_all_symbols(self) -> List[str]:
         """
@@ -229,22 +567,22 @@ class IndicatorEngine:
             List of symbol strings
         """
         with self.lock:
-            return list(self.price_data.keys())
+            return list(self.candle_data.keys())
     
     def get_symbol_data_count(self, symbol: str) -> int:
         """
-        Get the number of price data points for a symbol.
+        Get the number of candle data points for a symbol.
         
         Args:
             symbol: Stock symbol
             
         Returns:
-            Number of price data points
+            Number of candle data points
         """
         with self.lock:
-            if symbol not in self.price_data:
+            if symbol not in self.candle_data:
                 return 0
-            return len(self.price_data[symbol])
+            return len(self.candle_data[symbol])
     
     def is_symbol_ready(self, symbol: str) -> bool:
         """
@@ -254,12 +592,13 @@ class IndicatorEngine:
             symbol: Stock symbol
             
         Returns:
-            True if symbol has enough data for MA20, False otherwise
+            True if symbol has enough data for complex indicators, False otherwise
         """
         with self.lock:
-            if symbol not in self.price_data:
+            if symbol not in self.candle_data:
                 return False
-            return len(self.price_data[symbol]) >= self.max_history
+            # Need enough data for MACD (slowest indicator)
+            return len(self.candle_data[symbol]) >= self.macd_slow + self.macd_signal
     
     def validate_symbol_data(self, symbol: str) -> Dict[str, Union[bool, str]]:
         """
@@ -278,32 +617,34 @@ class IndicatorEngine:
         }
         
         with self.lock:
-            if symbol not in self.price_data:
+            if symbol not in self.candle_data:
                 result["valid"] = False
                 result["errors"].append("Symbol not found")
                 return result
             
-            price_deque = self.price_data[symbol]
+            candles = self.candle_data[symbol]
             
-            if not price_deque:
+            if not candles:
                 result["valid"] = False
-                result["errors"].append("No price data available")
+                result["errors"].append("No candle data available")
                 return result
             
-            # Check data count
-            if len(price_deque) < self.max_history:
+            # Check data count for complex indicators
+            min_required = self.macd_slow + self.macd_signal
+            if len(candles) < min_required:
                 result["warnings"].append(
-                    f"Insufficient data for MA20: have {len(price_deque)}, need {self.max_history}"
+                    f"Insufficient data for all indicators: have {len(candles)}, need {min_required}"
                 )
             
             # Check for price anomalies
-            prices = [item[0] for item in price_deque]
-            if any(p <= 0 for p in prices):
-                result["valid"] = False
-                result["errors"].append("Invalid price values detected (<= 0)")
+            for i, candle in enumerate(candles):
+                if any(candle.get(k, 0) <= 0 for k in ['open', 'high', 'low', 'close']):
+                    result["valid"] = False
+                    result["errors"].append(f"Invalid price values in candle {i}")
+                    break
             
             # Check for duplicate timestamps
-            timestamps = [item[1] for item in price_deque]
+            timestamps = [c.get('timestamp') for c in candles]
             if len(timestamps) != len(set(timestamps)):
                 result["warnings"].append("Duplicate timestamps detected")
         
@@ -317,8 +658,8 @@ class IndicatorEngine:
             Dict with engine status information
         """
         with self.lock:
-            symbol_count = len(self.price_data)
-            symbols = list(self.price_data.keys())
+            symbol_count = len(self.candle_data)
+            symbols = list(self.candle_data.keys())
             
             # Count ready symbols
             ready_symbols = sum(1 for symbol in symbols if self.is_symbol_ready(symbol))
@@ -327,6 +668,11 @@ class IndicatorEngine:
                 "total_symbols": symbol_count,
                 "ready_symbols": ready_symbols,
                 "max_history": self.max_history,
-                "supported_periods": self.ma_periods,
+                "supported_ma_periods": self.ma_periods,
+                "supported_ema_periods": self.ema_periods,
+                "rsi_period": self.rsi_period,
+                "adx_period": self.adx_period,
+                "bb_period": self.bb_period,
+                "bb_std_dev": self.bb_std_dev,
                 "symbols": symbols
             }

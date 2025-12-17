@@ -1,13 +1,13 @@
 """
 Database Initialization Script
 
-This script initializes the SQLite database with default data for the SignalGen MVP.
-It creates the database schema and seeds it with the default rule and initial settings.
+This script initializes the SQLite database with default data for the SignalGen system.
+It creates the database schema and seeds it with the default scalping rule and initial settings.
 
-Default Rule (as specified in MVP section 3):
-- NAME: "Default MA Momentum"
+Default Rule (as specified in PROJECT_SPRINT_PHASE1.md):
+- NAME: "Default Scalping"
 - TYPE: "system"
-- LOGIC: "PRICE > MA5 AND MA5 > MA10"
+- LOGIC: "AND" with 13 conditions (EMA crossovers, MACD, RSI, ADX momentum)
 - IS_SYSTEM: true (readonly, cannot be deleted)
 
 Initial Settings:
@@ -61,25 +61,41 @@ def _seed_default_rule(repo: SQLiteRepository) -> None:
     # Check if default rule already exists
     existing_rules = repo.get_all_rules()
     for rule in existing_rules:
-        if rule.get('is_system') and rule['name'] == "Default MA Momentum":
+        if rule.get('is_system') and rule['name'] == "Default Scalping":
             logger.info("Default rule already exists, skipping seeding")
             return
     
-    # Create default rule as specified in MVP section 3
+    # Create default scalping rule as specified in PROJECT_SPRINT_PHASE1.md
     default_rule_definition = {
         "id": 1,
-        "name": "Default MA Momentum",
+        "name": "Default Scalping",
         "type": "system",
         "logic": "AND",
         "conditions": [
-            {"left": "PRICE", "op": ">", "right": "MA5"},
-            {"left": "MA5", "op": ">", "right": "MA10"}
+            {"left": "PREV_CLOSE", "op": ">", "right": "PREV_OPEN"},
+            
+            {"left": "EMA6", "op": "CROSS_UP", "right": "EMA10"},
+            {"left": "EMA6", "op": "CROSS_UP", "right": "EMA20"},
+            
+            {"left": "PRICE", "op": ">=", "right": "EMA20"},
+            {"left": "PRICE_EMA20_DIFF_PCT", "op": "<=", "right": "TOLERANCE"},
+            
+            {"left": "MACD_HIST", "op": ">", "right": "MACD_HIST_PREV"},
+            {"left": "MACD_HIST", "op": ">", "right": 0},
+            {"left": "MACD_HIST_PREV", "op": ">", "right": 0},
+            
+            {"left": "ADX5", "op": ">", "right": "ADX5_PREV"},
+            {"left": "ADX5", "op": ">", "right": 0},
+            
+            {"left": "RSI14", "op": ">", "right": "RSI14_PREV"},
+            {"left": "RSI14_PREV", "op": "<", "right": 40},
+            {"left": "RSI14", "op": ">", "right": 40}
         ],
         "cooldown_sec": 60
     }
     
     rule_id = repo.create_rule(
-        name="Default MA Momentum",
+        name="Default Scalping",
         rule_type="system",
         definition=default_rule_definition,
         is_system=True

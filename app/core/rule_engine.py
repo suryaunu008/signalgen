@@ -45,10 +45,48 @@ class RuleEngine:
     """
     
     # Supported operands for rule conditions
-    SUPPORTED_OPERANDS = {"PRICE", "MA5", "MA10", "MA20"}
+    SUPPORTED_OPERANDS = {
+        # Price indicators
+        "PRICE",                    # Current price
+        "PREV_CLOSE",              # Previous candle close
+        "PREV_OPEN",               # Previous candle open
+        
+        # Moving Averages (Simple MA)
+        "MA20", "MA50", "MA100", "MA200",  # 20, 50, 100, 200 period Simple Moving Averages
+        
+        # Exponential Moving Averages
+        "EMA6", "EMA9", "EMA10", "EMA13", "EMA20", "EMA21", "EMA34", "EMA50",  # EMA periods
+        
+        # MACD (Moving Average Convergence Divergence)
+        "MACD",                    # MACD line (fast EMA - slow EMA)
+        "MACD_SIGNAL",             # MACD signal line
+        "MACD_HIST",               # MACD histogram current value
+        "MACD_HIST_PREV",          # MACD histogram previous value
+        
+        # Bollinger Bands
+        "BB_UPPER",                # Bollinger Bands upper band
+        "BB_MIDDLE",               # Bollinger Bands middle band (SMA)
+        "BB_LOWER",                # Bollinger Bands lower band
+        "BB_WIDTH",                # Bollinger Bands width (upper - lower)
+        
+        # ADX (Average Directional Index) - Trend strength
+        "ADX5",                    # ADX 5 period current value
+        "ADX5_PREV",               # ADX 5 period previous value
+        
+        # RSI (Relative Strength Index) - Momentum oscillator
+        "RSI14",                   # RSI 14 period current value
+        "RSI14_PREV",              # RSI 14 period previous value
+        
+        # Calculated metrics
+        "PRICE_EMA20_DIFF_PCT",    # Percentage difference between PRICE and EMA20
+    }
     
     # Supported operators for rule conditions
-    SUPPORTED_OPERATORS = {">", "<", ">=", "<="}
+    SUPPORTED_OPERATORS = {
+        ">", "<", ">=", "<=",      # Standard comparison operators
+        "CROSS_UP",                # Crossover up (indicator crosses above another)
+        "CROSS_DOWN"               # Crossover down (indicator crosses below another)
+    }
     
     # Supported logic operators
     SUPPORTED_LOGIC = {"AND"}
@@ -61,6 +99,7 @@ class RuleEngine:
             '>=': lambda a, b: a >= b,
             '<=': lambda a, b: a <= b,
         }
+        # Note: CROSS_UP and CROSS_DOWN are handled specially in evaluate_condition
     
     def evaluate(self, rule: Dict[str, Any], indicator_values: Dict[str, float]) -> bool:
         """
@@ -129,12 +168,20 @@ class RuleEngine:
             right_operand = condition.get("right")
             
             # Validate condition structure
-            if not all([left_operand, operator, right_operand]):
+            if not all([left_operand, operator, right_operand is not None]):
                 raise RuleEvaluationError("Condition must have 'left', 'op', and 'right' fields")
             
             # Validate operator
             if operator not in self.SUPPORTED_OPERATORS:
                 raise RuleEvaluationError(f"Unsupported operator: {operator}")
+            
+            # Handle CROSS_UP operator specially
+            if operator == "CROSS_UP":
+                return self._evaluate_cross_up(left_operand, right_operand, indicator_values)
+            
+            # Handle CROSS_DOWN operator specially
+            if operator == "CROSS_DOWN":
+                return self._evaluate_cross_down(left_operand, right_operand, indicator_values)
             
             # Get values for operands
             left_value = self._get_operand_value(left_operand, indicator_values)
@@ -198,7 +245,8 @@ class RuleEngine:
             right_operand = condition.get("right")
             
             for operand in [left_operand, right_operand]:
-                if operand not in self.SUPPORTED_OPERANDS:
+                # Allow numeric literals or supported operands
+                if not self._is_valid_operand(operand):
                     raise RuleValidationError(f"Unsupported operand: {operand}")
             
             # Validate operator
@@ -245,12 +293,12 @@ class RuleEngine:
         except Exception as e:
             raise RuleValidationError(f"Failed to parse rule definition: {str(e)}")
     
-    def _get_operand_value(self, operand: str, indicator_values: Dict[str, float]) -> float:
+    def _get_operand_value(self, operand: Union[str, int, float], indicator_values: Dict[str, float]) -> float:
         """
-        Get the value for an operand from indicator values.
+        Get the value for an operand from indicator values or return numeric literal.
         
         Args:
-            operand: The operand to get value for (e.g., "PRICE", "MA5")
+            operand: The operand to get value for (e.g., "PRICE", "MA5") or numeric literal
             indicator_values: Dictionary of current indicator values
             
         Returns:
@@ -259,6 +307,17 @@ class RuleEngine:
         Raises:
             RuleEvaluationError: If operand is not found in indicator values
         """
+        # If operand is a numeric literal, return it directly
+        if isinstance(operand, (int, float)):
+            return float(operand)
+        
+        # Try to convert string to number if it's a numeric string
+        if isinstance(operand, str):
+            try:
+                return float(operand)
+            except ValueError:
+                pass  # Not a numeric string, continue to look it up
+        
         if operand not in indicator_values:
             raise RuleEvaluationError(f"Missing indicator value for operand: {operand}")
         
@@ -269,3 +328,112 @@ class RuleEngine:
             raise RuleEvaluationError(f"Non-numeric value for operand {operand}: {value}")
         
         return float(value)
+    
+    def _is_valid_operand(self, operand: Union[str, int, float]) -> bool:
+        """
+        Check if an operand is valid (either supported operand or numeric literal).
+        
+        Args:
+            operand: The operand to validate
+            
+        Returns:
+            bool: True if valid, False otherwise
+        """
+        # Allow numeric types
+        if isinstance(operand, (int, float)):
+            return True
+        
+        # Allow numeric strings
+        if isinstance(operand, str):
+            try:
+                float(operand)
+                return True
+            except ValueError:
+                pass
+        
+        # Check if it's a supported operand
+        return operand in self.SUPPORTED_OPERANDS
+    
+    def _evaluate_cross_up(self, left_operand: str, right_operand: str, indicator_values: Dict[str, float]) -> bool:
+        """
+        Evaluate a CROSS_UP condition.
+        
+        CROSS_UP checks if left indicator crosses above right indicator:
+        - Previous: left <= right
+        - Current: left > right
+        
+        Args:
+            left_operand: The indicator that crosses up (e.g., "EMA6")
+            right_operand: The indicator being crossed (e.g., "EMA10")
+            indicator_values: Dictionary of current and previous indicator values
+            
+        Returns:
+            bool: True if cross up occurred, False otherwise
+            
+        Raises:
+            RuleEvaluationError: If required previous values are not available
+        """
+        # Get current values
+        current_left = self._get_operand_value(left_operand, indicator_values)
+        current_right = self._get_operand_value(right_operand, indicator_values)
+        
+        # Get previous values - expect them to be named with _PREV suffix or stored separately
+        # For indicators, we need their previous values
+        prev_left_key = f"{left_operand}_PREV"
+        prev_right_key = f"{right_operand}_PREV"
+        
+        if prev_left_key not in indicator_values or prev_right_key not in indicator_values:
+            raise RuleEvaluationError(
+                f"CROSS_UP requires previous values: {prev_left_key} and {prev_right_key} not found"
+            )
+        
+        prev_left = indicator_values[prev_left_key]
+        prev_right = indicator_values[prev_right_key]
+        
+        # Cross up condition: was below or equal, now above
+        was_below_or_equal = prev_left <= prev_right
+        is_now_above = current_left > current_right
+        
+        return was_below_or_equal and is_now_above
+    
+    def _evaluate_cross_down(self, left_operand: str, right_operand: str, indicator_values: Dict[str, float]) -> bool:
+        """
+        Evaluate a CROSS_DOWN condition.
+        
+        CROSS_DOWN checks if left indicator crosses below right indicator:
+        - Previous: left >= right
+        - Current: left < right
+        
+        Args:
+            left_operand: The indicator that crosses down (e.g., "EMA6")
+            right_operand: The indicator being crossed (e.g., "EMA10")
+            indicator_values: Dictionary of current and previous indicator values
+            
+        Returns:
+            bool: True if cross down occurred, False otherwise
+            
+        Raises:
+            RuleEvaluationError: If required previous values are not available
+        """
+        # Get current values
+        current_left = self._get_operand_value(left_operand, indicator_values)
+        current_right = self._get_operand_value(right_operand, indicator_values)
+        
+        # Get previous values - expect them to be named with _PREV suffix or stored separately
+        # For indicators, we need their previous values
+        prev_left_key = f"{left_operand}_PREV"
+        prev_right_key = f"{right_operand}_PREV"
+        
+        if prev_left_key not in indicator_values or prev_right_key not in indicator_values:
+            raise RuleEvaluationError(
+                f"CROSS_DOWN requires previous values: {prev_left_key} and {prev_right_key} not found"
+            )
+        
+        prev_left = indicator_values[prev_left_key]
+        prev_right = indicator_values[prev_right_key]
+        
+        # Cross down condition: was above or equal, now below
+        was_above_or_equal = prev_left >= prev_right
+        is_now_below = current_left < current_right
+        
+        return was_above_or_equal and is_now_below

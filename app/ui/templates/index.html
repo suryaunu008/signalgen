@@ -198,10 +198,48 @@
                     <select
                       class="condition-left flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                     >
-                      <option value="PRICE">PRICE</option>
-                      <option value="MA5">MA5</option>
-                      <option value="MA10">MA10</option>
-                      <option value="MA20">MA20</option>
+                      <optgroup label="Price & Candle">
+                        <option value="PRICE">PRICE</option>
+                        <option value="PREV_CLOSE">PREV_CLOSE</option>
+                        <option value="PREV_OPEN">PREV_OPEN</option>
+                      </optgroup>
+                      <optgroup label="Simple Moving Averages">
+                        <option value="MA20">MA20</option>
+                        <option value="MA50">MA50</option>
+                        <option value="MA100">MA100</option>
+                        <option value="MA200">MA200</option>
+                      </optgroup>
+                      <optgroup label="Exponential Moving Averages">
+                        <option value="EMA6">EMA6</option>
+                        <option value="EMA9">EMA9</option>
+                        <option value="EMA10">EMA10</option>
+                        <option value="EMA13">EMA13</option>
+                        <option value="EMA20">EMA20</option>
+                        <option value="EMA21">EMA21</option>
+                        <option value="EMA34">EMA34</option>
+                        <option value="EMA50">EMA50</option>
+                      </optgroup>
+                      <optgroup label="MACD">
+                        <option value="MACD_HIST">MACD_HIST</option>
+                        <option value="MACD_HIST_PREV">MACD_HIST_PREV</option>
+                      </optgroup>
+                      <optgroup label="RSI">
+                        <option value="RSI14">RSI14</option>
+                        <option value="RSI14_PREV">RSI14_PREV</option>
+                      </optgroup>
+                      <optgroup label="ADX">
+                        <option value="ADX5">ADX5</option>
+                        <option value="ADX5_PREV">ADX5_PREV</option>
+                      </optgroup>
+                      <optgroup label="Calculated Metrics">
+                        <option value="PRICE_EMA20_DIFF_PCT">
+                          PRICE_EMA20_DIFF_PCT
+                        </option>
+                        <option value="TOLERANCE">TOLERANCE</option>
+                      </optgroup>
+                      <optgroup label="Numeric Value">
+                        <option value="_CUSTOM_">Custom Number...</option>
+                      </optgroup>
                     </select>
                     <select
                       class="condition-op px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -210,14 +248,54 @@
                       <option value="<"><</option>
                       <option value=">=">>=</option>
                       <option value="<="><=</option>
+                      <option value="CROSS_UP">CROSS_UP</option>
+                      <option value="CROSS_DOWN">CROSS_DOWN</option>
                     </select>
                     <select
                       class="condition-right flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                     >
-                      <option value="PRICE">PRICE</option>
-                      <option value="MA5">MA5</option>
-                      <option value="MA10">MA10</option>
-                      <option value="MA20">MA20</option>
+                      <optgroup label="Price & Candle">
+                        <option value="PRICE">PRICE</option>
+                        <option value="PREV_CLOSE">PREV_CLOSE</option>
+                        <option value="PREV_OPEN">PREV_OPEN</option>
+                      </optgroup>
+                      <optgroup label="Simple Moving Averages">
+                        <option value="MA20">MA20</option>
+                        <option value="MA50">MA50</option>
+                        <option value="MA100">MA100</option>
+                        <option value="MA200">MA200</option>
+                      </optgroup>
+                      <optgroup label="Exponential Moving Averages">
+                        <option value="EMA6">EMA6</option>
+                        <option value="EMA9">EMA9</option>
+                        <option value="EMA10">EMA10</option>
+                        <option value="EMA13">EMA13</option>
+                        <option value="EMA20">EMA20</option>
+                        <option value="EMA21">EMA21</option>
+                        <option value="EMA34">EMA34</option>
+                        <option value="EMA50">EMA50</option>
+                      </optgroup>
+                      <optgroup label="MACD">
+                        <option value="MACD_HIST">MACD_HIST</option>
+                        <option value="MACD_HIST_PREV">MACD_HIST_PREV</option>
+                      </optgroup>
+                      <optgroup label="RSI">
+                        <option value="RSI14">RSI14</option>
+                        <option value="RSI14_PREV">RSI14_PREV</option>
+                      </optgroup>
+                      <optgroup label="ADX">
+                        <option value="ADX5">ADX5</option>
+                        <option value="ADX5_PREV">ADX5_PREV</option>
+                      </optgroup>
+                      <optgroup label="Calculated Metrics">
+                        <option value="PRICE_EMA20_DIFF_PCT">
+                          PRICE_EMA20_DIFF_PCT
+                        </option>
+                        <option value="TOLERANCE">TOLERANCE</option>
+                      </optgroup>
+                      <optgroup label="Numeric Value">
+                        <option value="_CUSTOM_">Custom Number...</option>
+                      </optgroup>
                     </select>
                     <button
                       type="button"

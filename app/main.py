@@ -63,35 +63,16 @@ def seed_default_data(repository: SQLiteRepository) -> None:
     logger = logging.getLogger(__name__)
     
     try:
-        # Check if default rule already exists
+        # Default rule creation is now handled by init_db.py
+        # Check for "Default Scalping" rule exists
         existing_rules = repository.get_all_rules()
         default_rule_exists = any(
-            rule.get('name') == 'MA Momentum' and rule.get('is_system')
+            rule.get('name') == 'Default Scalping' and rule.get('is_system')
             for rule in existing_rules
         )
         
         if not default_rule_exists:
-            # Create default system rule
-            default_rule_definition = {
-                "id": 1,
-                "name": "MA Momentum",
-                "type": "system",
-                "logic": "AND",
-                "conditions": [
-                    {"left": "PRICE", "op": ">", "right": "MA5"},
-                    {"left": "MA5", "op": ">", "right": "MA10"}
-                ],
-                "cooldown_sec": 60
-            }
-            
-            repository.create_rule(
-                name="MA Momentum",
-                rule_type="system",
-                definition=default_rule_definition,
-                is_system=True
-            )
-            
-            logger.info("Default system rule 'MA Momentum' created")
+            logger.warning("Default Scalping rule not found. Please run: python -m app.storage.init_db")
         
         # Create default watchlist if none exists
         existing_watchlists = repository.get_all_watchlists()

@@ -93,9 +93,10 @@ class SignalGenApp {
       this.updateWatchlists(watchlists);
       this.populateWatchlistSelect(watchlists);
 
-      // Load recent signals
+      // Load recent signals (sorted from newest to oldest)
       const signals = await API.getSignals(20);
-      signals.forEach((signal) => this.addSignal(signal));
+      // Reverse to show newest first, and load silently without toast
+      signals.reverse().forEach((signal) => this.addSignal(signal, true));
 
       // Load settings
       const settings = await API.getAllSettings();
@@ -474,8 +475,10 @@ class SignalGenApp {
 
   /**
    * Add signal to the signals display
+   * @param {Object} signal - Signal data
+   * @param {boolean} silent - If true, don't show toast notification (for initial load)
    */
-  addSignal(signal) {
+  addSignal(signal, silent = false) {
     this.signals.unshift(signal);
 
     // Keep only the most recent signals
@@ -521,11 +524,13 @@ class SignalGenApp {
       container.removeChild(container.lastChild);
     }
 
-    // Show toast notification
-    this.showToast(
-      `New signal: ${signal.symbol} at $${signal.price}`,
-      "success"
-    );
+    // Show toast notification only if not in silent mode
+    if (!silent) {
+      this.showToast(
+        `New signal: ${signal.symbol} at $${signal.price}`,
+        "success"
+      );
+    }
   }
 
   /**
@@ -636,9 +641,19 @@ class SignalGenApp {
       const conditionRows = document.querySelectorAll(".condition-row");
 
       conditionRows.forEach((row) => {
-        const left = row.querySelector(".condition-left").value;
+        let left = row.querySelector(".condition-left").value;
         const op = row.querySelector(".condition-op").value;
-        const right = row.querySelector(".condition-right").value;
+        let right = row.querySelector(".condition-right").value;
+
+        // Handle custom numeric input
+        if (left === "_CUSTOM_") {
+          const customInput = row.querySelector(".condition-left-custom");
+          left = parseFloat(customInput.value) || 0;
+        }
+        if (right === "_CUSTOM_") {
+          const customInput = row.querySelector(".condition-right-custom");
+          right = parseFloat(customInput.value) || 0;
+        }
 
         conditions.push({ left, op, right });
       });
@@ -688,31 +703,172 @@ class SignalGenApp {
 
     // Reset conditions to single empty row
     const container = document.getElementById("conditions-container");
-    container.innerHTML = `
-            <div class="condition-row flex space-x-2">
-                <select class="condition-left flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                    <option value="PRICE">PRICE</option>
-                    <option value="MA5">MA5</option>
-                    <option value="MA10">MA10</option>
-                    <option value="MA20">MA20</option>
-                </select>
-                <select class="condition-op px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                    <option value=">">></option>
-                    <option value="<"><</option>
-                    <option value=">=">>=</option>
-                    <option value="<="><=</option>
-                </select>
-                <select class="condition-right flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                    <option value="PRICE">PRICE</option>
-                    <option value="MA5">MA5</option>
-                    <option value="MA10">MA10</option>
-                    <option value="MA20">MA20</option>
-                </select>
-                <button type="button" class="remove-condition px-3 py-2 bg-red-500 text-white rounded-md hover:bg-red-600 transition-colors">
-                    <i class="fas fa-trash"></i>
-                </button>
-            </div>
-        `;
+    container.innerHTML = this.getConditionRowHTML();
+    this.attachConditionRowListeners(container.querySelector(".condition-row"));
+  }
+
+  /**
+   * Get HTML for a condition row with all operands
+   */
+  getConditionRowHTML() {
+    return `
+      <div class="condition-row flex space-x-2">
+        <select class="condition-left flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+          <optgroup label="Price & Candle">
+            <option value="PRICE">PRICE</option>
+            <option value="PREV_CLOSE">PREV_CLOSE</option>
+            <option value="PREV_OPEN">PREV_OPEN</option>
+          </optgroup>
+          <optgroup label="Simple Moving Averages">
+            <option value="MA20">MA20</option>
+            <option value="MA50">MA50</option>
+            <option value="MA100">MA100</option>
+            <option value="MA200">MA200</option>
+          </optgroup>
+          <optgroup label="Exponential Moving Averages">
+            <option value="EMA6">EMA6</option>
+            <option value="EMA9">EMA9</option>
+            <option value="EMA10">EMA10</option>
+            <option value="EMA13">EMA13</option>
+            <option value="EMA20">EMA20</option>
+            <option value="EMA21">EMA21</option>
+            <option value="EMA34">EMA34</option>
+            <option value="EMA50">EMA50</option>
+          </optgroup>
+          <optgroup label="MACD">
+            <option value="MACD_HIST">MACD_HIST</option>
+            <option value="MACD_HIST_PREV">MACD_HIST_PREV</option>
+          </optgroup>
+          <optgroup label="RSI">
+            <option value="RSI14">RSI14</option>
+            <option value="RSI14_PREV">RSI14_PREV</option>
+          </optgroup>
+          <optgroup label="ADX">
+            <option value="ADX5">ADX5</option>
+            <option value="ADX5_PREV">ADX5_PREV</option>
+          </optgroup>
+          <optgroup label="Calculated Metrics">
+            <option value="PRICE_EMA20_DIFF_PCT">PRICE_EMA20_DIFF_PCT</option>
+            <option value="TOLERANCE">TOLERANCE</option>
+          </optgroup>
+          <optgroup label="Numeric Value">
+            <option value="_CUSTOM_">Custom Number...</option>
+          </optgroup>
+        </select>
+        <select class="condition-op px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+          <option value=">">></option>
+          <option value="<"><</option>
+          <option value=">=">>=</option>
+          <option value="<="><=</option>
+          <option value="CROSS_UP">CROSS_UP</option>
+          <option value="CROSS_DOWN">CROSS_DOWN</option>
+        </select>
+        <select class="condition-right flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+          <optgroup label="Price & Candle">
+            <option value="PRICE">PRICE</option>
+            <option value="PREV_CLOSE">PREV_CLOSE</option>
+            <option value="PREV_OPEN">PREV_OPEN</option>
+          </optgroup>
+          <optgroup label="Simple Moving Averages">
+            <option value="MA20">MA20</option>
+            <option value="MA50">MA50</option>
+            <option value="MA100">MA100</option>
+            <option value="MA200">MA200</option>
+          </optgroup>
+          <optgroup label="Exponential Moving Averages">
+            <option value="EMA6">EMA6</option>
+            <option value="EMA9">EMA9</option>
+            <option value="EMA10">EMA10</option>
+            <option value="EMA13">EMA13</option>
+            <option value="EMA20">EMA20</option>
+            <option value="EMA21">EMA21</option>
+            <option value="EMA34">EMA34</option>
+            <option value="EMA50">EMA50</option>
+          </optgroup>
+          <optgroup label="MACD">
+            <option value="MACD_HIST">MACD_HIST</option>
+            <option value="MACD_HIST_PREV">MACD_HIST_PREV</option>
+          </optgroup>
+          <optgroup label="RSI">
+            <option value="RSI14">RSI14</option>
+            <option value="RSI14_PREV">RSI14_PREV</option>
+          </optgroup>
+          <optgroup label="ADX">
+            <option value="ADX5">ADX5</option>
+            <option value="ADX5_PREV">ADX5_PREV</option>
+          </optgroup>
+          <optgroup label="Calculated Metrics">
+            <option value="PRICE_EMA20_DIFF_PCT">PRICE_EMA20_DIFF_PCT</option>
+            <option value="TOLERANCE">TOLERANCE</option>
+          </optgroup>
+          <optgroup label="Numeric Value">
+            <option value="_CUSTOM_">Custom Number...</option>
+          </optgroup>
+        </select>
+        <button type="button" class="remove-condition px-3 py-2 bg-red-500 text-white rounded-md hover:bg-red-600 transition-colors">
+          <i class="fas fa-trash"></i>
+        </button>
+      </div>
+    `;
+  }
+
+  /**
+   * Attach event listeners to condition row
+   */
+  attachConditionRowListeners(row) {
+    const leftSelect = row.querySelector(".condition-left");
+    const rightSelect = row.querySelector(".condition-right");
+
+    leftSelect.addEventListener("change", (e) => {
+      if (e.target.value === "_CUSTOM_") {
+        this.showCustomInput(row, "left");
+      } else {
+        this.hideCustomInput(row, "left");
+      }
+    });
+
+    rightSelect.addEventListener("change", (e) => {
+      if (e.target.value === "_CUSTOM_") {
+        this.showCustomInput(row, "right");
+      } else {
+        this.hideCustomInput(row, "right");
+      }
+    });
+  }
+
+  /**
+   * Show custom numeric input
+   */
+  showCustomInput(row, side) {
+    const select = row.querySelector(`.condition-${side}`);
+    const existingInput = row.querySelector(`.condition-${side}-custom`);
+
+    if (existingInput) return;
+
+    const input = document.createElement("input");
+    input.type = "number";
+    input.step = "any";
+    input.className = `condition-${side}-custom flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500`;
+    input.placeholder = "Enter number";
+    input.value = "0";
+
+    select.style.display = "none";
+    select.parentNode.insertBefore(input, select);
+  }
+
+  /**
+   * Hide custom numeric input
+   */
+  hideCustomInput(row, side) {
+    const input = row.querySelector(`.condition-${side}-custom`);
+    const select = row.querySelector(`.condition-${side}`);
+
+    if (input) {
+      input.remove();
+    }
+    if (select) {
+      select.style.display = "";
+    }
   }
 
   /**
@@ -721,31 +877,10 @@ class SignalGenApp {
   addConditionRow() {
     const container = document.getElementById("conditions-container");
     const newRow = document.createElement("div");
-    newRow.className = "condition-row flex space-x-2";
-    newRow.innerHTML = `
-            <select class="condition-left flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                <option value="PRICE">PRICE</option>
-                <option value="MA5">MA5</option>
-                <option value="MA10">MA10</option>
-                <option value="MA20">MA20</option>
-            </select>
-            <select class="condition-op px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                <option value=">">></option>
-                <option value="<"><</option>
-                <option value=">=">>=</option>
-                <option value="<="><=</option>
-            </select>
-            <select class="condition-right flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                <option value="PRICE">PRICE</option>
-                <option value="MA5">MA5</option>
-                <option value="MA10">MA10</option>
-                <option value="MA20">MA20</option>
-            </select>
-            <button type="button" class="remove-condition px-3 py-2 bg-red-500 text-white rounded-md hover:bg-red-600 transition-colors">
-                <i class="fas fa-trash"></i>
-            </button>
-        `;
-    container.appendChild(newRow);
+    newRow.innerHTML = this.getConditionRowHTML();
+    const actualRow = newRow.firstElementChild;
+    container.appendChild(actualRow);
+    this.attachConditionRowListeners(actualRow);
   }
 
   /**
