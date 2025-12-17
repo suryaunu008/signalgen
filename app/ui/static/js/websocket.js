@@ -94,9 +94,11 @@ class WebSocketClient {
     // Trigger connect event
     this.handleEvent("connect", { connected: true });
 
-    // Join the price updates room (matching backend room name)
+    // Join all necessary rooms (matching backend room names)
     this.socket.emit("join_room", { room: "prices" });
-    console.log("DEBUG: Joined prices room");
+    this.socket.emit("join_room", { room: "engine_status" });
+    this.socket.emit("join_room", { room: "signals" });
+    console.log("DEBUG: Joined prices, engine_status, and signals rooms");
   }
 
   /**

@@ -105,7 +105,7 @@ class SQLiteRepository:
                     price REAL NOT NULL,
                     rule_id INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (rule_id) REFERENCES rules(id)
+                    FOREIGN KEY (rule_id) REFERENCES rules(id) ON DELETE SET NULL
                 )
             ''')
             
@@ -252,6 +252,12 @@ class SQLiteRepository:
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            
+            # First, set rule_id to NULL for any signals using this rule
+            # (for databases created before ON DELETE SET NULL was added)
+            cursor.execute('UPDATE signals SET rule_id = NULL WHERE rule_id = ?', (rule_id,))
+            
+            # Then delete the rule (only custom rules)
             cursor.execute('DELETE FROM rules WHERE id = ? AND is_system = FALSE', (rule_id,))
             conn.commit()
             return cursor.rowcount > 0
@@ -495,6 +501,22 @@ class SQLiteRepository:
             
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
+    
+    def delete_signal(self, signal_id: int) -> bool:
+        """
+        Delete a signal.
+        
+        Args:
+            signal_id: Signal ID
+            
+        Returns:
+            bool: True if deletion successful, False otherwise
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM signals WHERE id = ?', (signal_id,))
+            conn.commit()
+            return cursor.rowcount > 0
     
     # Settings operations
     def get_setting(self, key: str, default: Any = None) -> Any:

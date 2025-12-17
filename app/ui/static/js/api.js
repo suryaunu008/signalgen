@@ -169,6 +169,10 @@ class ApiClient {
     return this.get("/api/signals", params);
   }
 
+  async deleteSignal(signalId) {
+    return this.delete(`/api/signals/${signalId}`);
+  }
+
   // Settings API
   async getSetting(key) {
     return this.get(`/api/settings/${key}`);

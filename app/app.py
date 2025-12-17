@@ -273,17 +273,49 @@ class SignalGenApp:
         def get_system_status():
             """Get overall system status."""
             try:
-                # Get engine status (simplified for MVP)
-                engine_status = {
-                    'is_running': self._engine_running,
-                    'is_connected': False,
-                    'state': {'state': 'idle' if not self._engine_running else 'running'},
-                    'active_watchlist': [],
-                    'active_rule': None,
-                    'ibkr_connected': False,
-                    'reconnect_attempts': 0,
-                    'connection_details': {}
-                }
+                # Get actual engine status from scalping engine (with timeout protection)
+                if self.scalping_engine:
+                    try:
+                        # Use direct attribute access instead of method to avoid blocking
+                        engine_status = {
+                            'is_running': self.scalping_engine.is_running,
+                            'is_connected': self.scalping_engine.is_connected,
+                            'ibkr_connected': self.scalping_engine.is_connected,
+                            'state': {'state': 'running' if self.scalping_engine.is_running else 'idle'},
+                            'active_watchlist': self.scalping_engine.active_watchlist.copy() if self.scalping_engine.active_watchlist else [],
+                            'active_rule': self.scalping_engine.active_rule,
+                            'reconnect_attempts': self.scalping_engine.reconnect_attempts,
+                            'connection_details': {
+                                'host': self.scalping_engine.ib_host,
+                                'port': self.scalping_engine.ib_port,
+                                'client_id': self.scalping_engine.ib_client_id
+                            }
+                        }
+                    except Exception as e:
+                        self.logger.warning(f"Error getting engine status details: {e}")
+                        # Fallback to basic status
+                        engine_status = {
+                            'is_running': self.scalping_engine.is_running if hasattr(self.scalping_engine, 'is_running') else False,
+                            'is_connected': self.scalping_engine.is_connected if hasattr(self.scalping_engine, 'is_connected') else False,
+                            'ibkr_connected': self.scalping_engine.is_connected if hasattr(self.scalping_engine, 'is_connected') else False,
+                            'state': {'state': 'idle'},
+                            'active_watchlist': [],
+                            'active_rule': None,
+                            'reconnect_attempts': 0,
+                            'connection_details': {}
+                        }
+                else:
+                    # Fallback if engine not initialized
+                    engine_status = {
+                        'is_running': False,
+                        'is_connected': False,
+                        'state': {'state': 'idle'},
+                        'active_watchlist': [],
+                        'active_rule': None,
+                        'ibkr_connected': False,
+                        'reconnect_attempts': 0,
+                        'connection_details': {}
+                    }
                 
                 # Get database stats
                 db_stats = self.repository.get_database_stats()
@@ -686,6 +718,21 @@ class SignalGenApp:
                 return JSONResponse(content=signals)
             except Exception as e:
                 self.logger.error(f"Error getting signals: {e}")
+                raise HTTPException(status_code=500, detail="Internal server error")
+        
+        @self.app.delete("/api/signals/{signal_id}")
+        def delete_signal(signal_id: int):
+            """Delete a signal."""
+            try:
+                success = self.repository.delete_signal(signal_id)
+                if not success:
+                    raise HTTPException(status_code=404, detail="Signal not found")
+                
+                return {"message": "Signal deleted successfully"}
+            except HTTPException:
+                raise
+            except Exception as e:
+                self.logger.error(f"Error deleting signal {signal_id}: {e}")
                 raise HTTPException(status_code=500, detail="Internal server error")
         
         # Settings endpoints

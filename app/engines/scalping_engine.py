@@ -81,6 +81,9 @@ class ScalpingEngine:
         self.contract_symbol_map: Dict[int, str] = {}  # contract conId -> symbol mapping
         self.real_time_bars: Dict[str, object] = {}  # symbol -> RealTimeBars object mapping
         
+        # Per-symbol cooldown tracking
+        self.symbol_cooldowns: Dict[str, float] = {}  # symbol -> cooldown_end_time mapping
+        
         # Reconnection settings
         self.reconnect_enabled = True
         self.reconnect_interval = 5  # seconds
@@ -286,11 +289,34 @@ class ScalpingEngine:
         self.is_running = False
         self.reconnect_enabled = False
         
+        # Clear per-symbol cooldowns
+        self.symbol_cooldowns.clear()
+        self.logger.debug("Cleared all symbol cooldowns")
+        
         # Unsubscribe from all market data
         await self.unsubscribe_symbols(self.active_watchlist.copy())
         
         # Disconnect from IBKR
         await self.disconnect_from_ibkr()
+        
+        # Broadcast engine stopped status
+        try:
+            status = {
+                'is_running': False,
+                'is_connected': False,
+                'ibkr_connected': False,
+                'state': {'state': 'stopped'},
+                'active_watchlist': [],
+                'active_rule': None,
+                'subscribed_symbols': [],
+                'reconnect_enabled': False,
+                'reconnect_attempts': 0,
+                'connection_details': {'host': self.ib_host, 'port': self.ib_port, 'client_id': None}
+            }
+            self.broadcaster.broadcast_engine_status_sync(status)
+            self.logger.info("Broadcasted engine stopped status")
+        except Exception as e:
+            self.logger.error(f"Error broadcasting engine stopped status: {e}")
         
         self.logger.info("Scalping engine stopped")
     
@@ -648,8 +674,8 @@ class ScalpingEngine:
                 self.logger.debug(f"Insufficient data for {symbol} - skipping rule evaluation")
                 return
             
-            # Evaluate rule only if we can generate a signal
-            if self.state_machine.can_generate_signal() and self.active_rule:
+            # Evaluate rule only if symbol is not in cooldown
+            if self._can_generate_signal_for_symbol(symbol) and self.active_rule:
                 try:
                     # Extract rule definition if stored in nested format
                     rule_to_evaluate = self.active_rule
@@ -680,6 +706,31 @@ class ScalpingEngine:
         except Exception as e:
             self.logger.error(f"Failed to broadcast price for {symbol}: {e}")
     
+    def _can_generate_signal_for_symbol(self, symbol: str) -> bool:
+        """
+        Check if a signal can be generated for the given symbol.
+        
+        Args:
+            symbol: Symbol to check
+            
+        Returns:
+            bool: True if symbol is not in cooldown, False otherwise
+        """
+        current_time = time.time()
+        cooldown_end = self.symbol_cooldowns.get(symbol, 0)
+        return current_time >= cooldown_end
+    
+    def _start_symbol_cooldown(self, symbol: str, cooldown_seconds: int) -> None:
+        """
+        Start cooldown period for a specific symbol.
+        
+        Args:
+            symbol: Symbol to place on cooldown
+            cooldown_seconds: Cooldown duration in seconds
+        """
+        self.symbol_cooldowns[symbol] = time.time() + cooldown_seconds
+        self.logger.debug(f"Started {cooldown_seconds}s cooldown for {symbol}")
+    
     def _generate_signal(self, symbol: str, price: float, timestamp: float) -> None:
         """
         Generate and broadcast trading signal.
@@ -689,9 +740,6 @@ class ScalpingEngine:
             price: Current price at signal generation
             timestamp: Unix timestamp of signal generation
         """
-        if not self.state_machine.transition_to_signal():
-            return
-        
         try:
             # Create signal data
             signal_data = {
@@ -717,15 +765,14 @@ class ScalpingEngine:
                 except Exception as e:
                     self.logger.error(f"Failed to schedule signal broadcast: {e}")
             
-            # Start cooldown period
+            # Start cooldown period for this symbol
             cooldown_sec = self.active_rule.get('cooldown_sec', 60)
-            self.state_machine.start_cooldown(cooldown_sec)
+            self._start_symbol_cooldown(symbol, cooldown_sec)
             
-            self.logger.info(f"Signal generated for {symbol} at {price} (ID: {signal_id})")
+            self.logger.info(f"Signal generated for {symbol} at {price} (ID: {signal_id}), cooldown: {cooldown_sec}s")
             
         except Exception as e:
             self.logger.error(f"Error generating signal for {symbol}: {e}")
-            # Reset state on error
     
     def _on_ticker_update(self, ticker) -> None:
         """

@@ -28,6 +28,9 @@ class SignalGenApp {
     this.updateRulesList = this.updateRulesList.bind(this);
     this.updateWatchlists = this.updateWatchlists.bind(this);
     this.addSignal = this.addSignal.bind(this);
+    this.deleteSignal = this.deleteSignal.bind(this);
+    this.showSignalDetail = this.showSignalDetail.bind(this);
+    this.closeSignalModal = this.closeSignalModal.bind(this);
     this.showToast = this.showToast.bind(this);
     this.showLoading = this.showLoading.bind(this);
     this.hideLoading = this.hideLoading.bind(this);
@@ -187,12 +190,28 @@ class SignalGenApp {
         this.closeRuleModal();
       });
 
-    // Close modal when clicking outside
+    // Close rule modal when clicking outside
     document
       .getElementById("rule-detail-modal")
       .addEventListener("click", (e) => {
         if (e.target.id === "rule-detail-modal") {
           this.closeRuleModal();
+        }
+      });
+
+    // Signal modal close button event listener
+    document
+      .getElementById("close-signal-modal")
+      .addEventListener("click", () => {
+        this.closeSignalModal();
+      });
+
+    // Close signal modal when clicking outside
+    document
+      .getElementById("signal-detail-modal")
+      .addEventListener("click", (e) => {
+        if (e.target.id === "signal-detail-modal") {
+          this.closeSignalModal();
         }
       });
   }
@@ -204,6 +223,9 @@ class SignalGenApp {
     WS.on("connect", () => {
       console.log("Connected to WebSocket server");
       this.updateConnectionStatus(true);
+
+      // Request current engine status when connected
+      this.pollEngineStatus();
     });
 
     WS.on("disconnect", () => {
@@ -215,8 +237,10 @@ class SignalGenApp {
       this.addSignal(signal);
     });
 
-    WS.on("engine_status", (status) => {
-      console.log("Received engine_status via WebSocket:", status);
+    WS.on("engine_status", (statusData) => {
+      console.log("Received engine_status via WebSocket:", statusData);
+      // Extract status from wrapper if present
+      const status = statusData.data || statusData;
       this.updateEngineStatus(status);
     });
 
@@ -293,11 +317,11 @@ class SignalGenApp {
 
       if (connected) {
         indicator.className =
-          "status-indicator w-3 h-3 bg-green-500 rounded-full";
+          "status-indicator w-3 h-3 bg-green-500 rounded-full animate-pulse";
         text.textContent = "Connected";
       } else {
         indicator.className =
-          "status-indicator w-3 h-3 bg-red-500 rounded-full animate-pulse";
+          "status-indicator w-3 h-3 bg-red-500 rounded-full";
         text.textContent = "Disconnected";
       }
     }
@@ -307,6 +331,8 @@ class SignalGenApp {
    * Update engine status display
    */
   updateEngineStatus(status) {
+    console.log("DEBUG: updateEngineStatus called with:", status);
+
     const wasRunning = this.engineRunning;
     this.engineRunning = status.is_running;
 
@@ -323,16 +349,24 @@ class SignalGenApp {
       text.textContent = "Engine: Stopped";
     }
 
-    // Update IBKR status
+    // Update IBKR status - check both ibkr_connected and is_connected
     const ibkrStatus = document.getElementById("ibkr-status");
     const ibkrIndicator = ibkrStatus.querySelector("div:first-child");
     const ibkrText = ibkrStatus.querySelector("span");
 
-    if (status.ibkr_connected) {
-      ibkrIndicator.className = "w-3 h-3 bg-green-500 rounded-full";
+    const ibkrConnected =
+      status.ibkr_connected !== undefined
+        ? status.ibkr_connected
+        : status.is_connected;
+
+    console.log("DEBUG: IBKR connected status:", ibkrConnected);
+
+    if (ibkrConnected) {
+      ibkrIndicator.className =
+        "w-3 h-3 bg-green-500 rounded-full animate-pulse";
       ibkrText.textContent = "IBKR: Connected";
     } else {
-      ibkrIndicator.className = "w-3 h-3 bg-red-500 rounded-full animate-pulse";
+      ibkrIndicator.className = "w-3 h-3 bg-red-500 rounded-full ";
       ibkrText.textContent = "IBKR: Disconnected";
     }
 
@@ -509,25 +543,46 @@ class SignalGenApp {
     // Create signal element
     const signalElement = document.createElement("div");
     signalElement.className =
-      "signal-item p-3 border rounded-lg bg-green-50 border-green-200";
+      "signal-item p-3 border rounded-lg bg-green-50 border-green-200 hover:shadow-md transition-shadow";
+    signalElement.dataset.signalId = signal.id || Date.now(); // Use signal ID for deletion
+
+    // Handle both 'time' (from DB) and 'timestamp' (from WebSocket) fields
+    const signalTime = signal.time || signal.timestamp;
+    const signalDate = signalTime ? new Date(signalTime) : null;
+    const dateDisplay = signalDate
+      ? signalDate.toLocaleDateString()
+      : "Unknown date";
+    const timeDisplay = signalDate
+      ? signalDate.toLocaleTimeString()
+      : "Unknown time";
+
     signalElement.innerHTML = `
-            <div class="flex justify-between items-start">
-                <div>
+            <div class="flex justify-between items-start gap-3">
+                <div class="flex-1">
                     <h4 class="font-medium text-green-800">${signal.symbol}</h4>
-                    <p class="text-sm text-green-600">Price: $${
-                      signal.price
-                    }</p>
-                    <p class="text-xs text-green-500">${new Date(
-                      signal.time
-                    ).toLocaleTimeString()}</p>
+                    <p class="text-sm text-green-600">Price: $${signal.price}</p>
+                    <p class="text-xs text-green-500">${dateDisplay} • ${timeDisplay}</p>
                 </div>
-                <div class="text-right">
-                    <span class="inline-block px-2 py-1 text-xs bg-green-600 text-white rounded">
-                        Signal
-                    </span>
+                <div class="flex items-center gap-1">
+                    <button class="view-signal-detail px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors" title="View Details">
+                        <i class="fas fa-info-circle"></i>
+                    </button>
+                    <button class="delete-signal px-2 py-1 text-xs bg-red-500 text-white rounded hover:bg-red-600 transition-colors" title="Delete Signal">
+                        <i class="fas fa-trash"></i>
+                    </button>
                 </div>
             </div>
         `;
+
+    // Add click handler for detail button
+    const detailBtn = signalElement.querySelector(".view-signal-detail");
+    detailBtn.addEventListener("click", () => this.showSignalDetail(signal));
+
+    // Add click handler for delete button
+    const deleteBtn = signalElement.querySelector(".delete-signal");
+    deleteBtn.addEventListener("click", () =>
+      this.deleteSignal(signal, signalElement)
+    );
 
     // Add to container (at the beginning)
     container.insertBefore(signalElement, container.firstChild);
@@ -543,6 +598,48 @@ class SignalGenApp {
         `New signal: ${signal.symbol} at $${signal.price}`,
         "success"
       );
+    }
+  }
+
+  /**
+   * Delete signal from UI and database
+   * @param {Object} signal - Signal data
+   * @param {HTMLElement} signalElement - Signal DOM element
+   */
+  async deleteSignal(signal, signalElement) {
+    if (!confirm(`Delete signal for ${signal.symbol} at $${signal.price}?`)) {
+      return;
+    }
+
+    try {
+      // If signal has ID, delete from database
+      if (signal.id) {
+        await API.deleteSignal(signal.id);
+      }
+
+      // Remove from UI
+      signalElement.remove();
+
+      // Remove from signals array
+      const index = this.signals.findIndex((s) => s.id === signal.id);
+      if (index > -1) {
+        this.signals.splice(index, 1);
+      }
+
+      // If no signals left, show placeholder
+      const container = document.getElementById("signals-container");
+      if (container.children.length === 0) {
+        container.innerHTML = `
+          <div class="text-gray-500 text-center py-8">
+            No signals received yet
+          </div>
+        `;
+      }
+
+      this.showToast("Signal deleted successfully", "success");
+    } catch (error) {
+      console.error("Failed to delete signal:", error);
+      this.showToast(`Failed to delete signal: ${error.message}`, "error");
     }
   }
 
@@ -1931,6 +2028,101 @@ class SignalGenApp {
    */
   closeRuleModal() {
     document.getElementById("rule-detail-modal").classList.add("hidden");
+  }
+
+  /**
+   * Show signal detail modal
+   */
+  async showSignalDetail(signal) {
+    try {
+      this.showLoading();
+
+      // Populate signal information
+      const signalTime = signal.time || signal.timestamp;
+      const signalDate = signalTime ? new Date(signalTime) : null;
+
+      document.getElementById("signal-modal-symbol").textContent =
+        signal.symbol;
+      document.getElementById(
+        "signal-modal-price"
+      ).textContent = `$${signal.price}`;
+      document.getElementById("signal-modal-date").textContent = signalDate
+        ? signalDate.toLocaleDateString()
+        : "Unknown";
+      document.getElementById("signal-modal-time").textContent = signalDate
+        ? signalDate.toLocaleTimeString()
+        : "Unknown";
+
+      // Fetch rule information
+      let rule = null;
+      if (signal.rule_id) {
+        try {
+          rule = await API.getRule(signal.rule_id);
+        } catch (error) {
+          console.warn("Failed to fetch rule details:", error);
+        }
+      }
+
+      if (rule) {
+        // Populate rule information
+        document.getElementById("signal-modal-rule-name").textContent =
+          rule.name || "Unknown";
+        document.getElementById("signal-modal-rule-logic").textContent =
+          rule.definition?.logic || rule.logic || "Unknown";
+        document.getElementById("signal-modal-rule-cooldown").textContent = `${
+          rule.definition?.cooldown_sec || rule.cooldown_sec || 60
+        } seconds`;
+
+        // Populate conditions
+        const conditionsContainer = document.getElementById(
+          "signal-modal-rule-conditions"
+        );
+        const conditions = rule.definition?.conditions || rule.conditions || [];
+
+        if (conditions.length > 0) {
+          conditionsContainer.innerHTML = conditions
+            .map(
+              (cond, idx) => `
+              <div class="flex items-center space-x-2 text-xs bg-white border border-blue-200 rounded p-2">
+                <span class="font-mono text-blue-700">${idx + 1}.</span>
+                <span class="font-medium text-gray-700">${cond.left}</span>
+                <span class="px-2 py-0.5 bg-blue-100 text-blue-800 rounded font-semibold">${
+                  cond.op
+                }</span>
+                <span class="font-medium text-gray-700">${cond.right}</span>
+              </div>
+            `
+            )
+            .join("");
+        } else {
+          conditionsContainer.innerHTML =
+            '<p class="text-xs text-gray-500">No conditions</p>';
+        }
+      } else {
+        // Rule not found or unavailable
+        document.getElementById("signal-modal-rule-name").textContent =
+          "Rule not available";
+        document.getElementById("signal-modal-rule-logic").textContent = "-";
+        document.getElementById("signal-modal-rule-cooldown").textContent = "-";
+        document.getElementById("signal-modal-rule-conditions").innerHTML =
+          '<p class="text-xs text-gray-500">Rule information not available</p>';
+      }
+
+      // Show modal
+      document.getElementById("signal-detail-modal").classList.remove("hidden");
+    } catch (error) {
+      console.error("Failed to show signal detail:", error);
+      this.showToast("Failed to load signal details", "error");
+    } finally {
+      this.hideLoading();
+    }
+  }
+
+  /**
+   * Close the signal detail modal
+   */
+  closeSignalModal() {
+    document.getElementById("signal-detail-modal").classList.add("hidden");
   }
 }
 
