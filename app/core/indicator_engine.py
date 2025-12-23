@@ -2,7 +2,7 @@
 Indicator Engine Module
 
 This module provides technical indicator calculations for the SignalGen scalping system.
-It calculates various technical indicators from price/candle data for multiple symbols.
+Uses pandas-ta library for efficient and accurate technical indicator calculations.
 
 Key Features:
 - Multi-symbol support (up to 5 symbols for MVP)
@@ -33,13 +33,17 @@ from collections import deque
 from typing import Dict, List, Optional, Union
 import logging
 
+import pandas as pd
+import numpy as np
+import ta
+
 
 class IndicatorEngine:
     """
     Technical indicator calculation engine for trading signals.
     
-    This class calculates moving averages from price data for multiple symbols
-    with thread-safe operations suitable for async environments.
+    Uses pandas-ta library for accurate and efficient indicator calculations.
+    Thread-safe operations suitable for async environments.
     """
     
     def __init__(self, max_history: int = 250):
@@ -241,15 +245,14 @@ class IndicatorEngine:
             raise ValueError("No price data provided")
         
         results = {}
+        s = pd.Series(prices)
         
         for period in periods:
             if len(prices) < period:
                 raise ValueError(f"Insufficient data for MA{period}: need {period}, have {len(prices)}")
             
-            # Calculate simple moving average
-            recent_prices = prices[-period:]  # Last 'period' prices
-            ma_value = sum(recent_prices) / period
-            results[period] = ma_value
+            ma = ta.trend.sma_indicator(s, window=period)
+            results[period] = ma.iloc[-1]
         
         return results
     
@@ -270,16 +273,9 @@ class IndicatorEngine:
         if not prices or len(prices) < period:
             raise ValueError(f"Insufficient data for EMA{period}: need {period}, have {len(prices)}")
         
-        multiplier = 2 / (period + 1)
-        
-        # Start with SMA as initial EMA
-        ema = sum(prices[:period]) / period
-        
-        # Calculate EMA for remaining prices
-        for price in prices[period:]:
-            ema = (price * multiplier) + (ema * (1 - multiplier))
-        
-        return ema
+        s = pd.Series(prices)
+        ema = ta.trend.ema_indicator(s, window=period)
+        return ema.iloc[-1]
     
     def calculate_rsi(self, prices: List[float], period: int = 14) -> float:
         """
@@ -298,24 +294,9 @@ class IndicatorEngine:
         if len(prices) < period + 1:
             raise ValueError(f"Insufficient data for RSI{period}: need {period + 1}, have {len(prices)}")
         
-        # Calculate price changes
-        deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
-        
-        # Separate gains and losses
-        gains = [d if d > 0 else 0 for d in deltas]
-        losses = [-d if d < 0 else 0 for d in deltas]
-        
-        # Calculate average gain and loss
-        avg_gain = sum(gains[-period:]) / period
-        avg_loss = sum(losses[-period:]) / period
-        
-        if avg_loss == 0:
-            return 100.0
-        
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-        
-        return rsi
+        s = pd.Series(prices)
+        rsi = ta.momentum.rsi(s, window=period)
+        return rsi.iloc[-1]
     
     def calculate_macd(self, prices: List[float], fast: int = 12, slow: int = 26, signal: int = 9) -> Dict[str, float]:
         """
@@ -336,36 +317,20 @@ class IndicatorEngine:
         if len(prices) < slow + signal:
             raise ValueError(f"Insufficient data for MACD: need {slow + signal}, have {len(prices)}")
         
-        # Calculate MACD line (fast EMA - slow EMA)
-        fast_ema = self.calculate_ema(prices, fast)
-        slow_ema = self.calculate_ema(prices, slow)
-        macd_line = fast_ema - slow_ema
-        
-        # For signal line, we need MACD values history
-        # Simplified: calculate signal from recent price-based approximation
-        # In production, should store MACD history
-        macd_values = []
-        for i in range(slow, len(prices)):
-            f_ema = self.calculate_ema(prices[:i+1], fast)
-            s_ema = self.calculate_ema(prices[:i+1], slow)
-            macd_values.append(f_ema - s_ema)
-        
-        if len(macd_values) < signal:
-            signal_line = macd_line  # Fallback
-        else:
-            signal_line = sum(macd_values[-signal:]) / signal
-        
-        histogram = macd_line - signal_line
+        s = pd.Series(prices)
+        macd_line = ta.trend.macd(s, window_fast=fast, window_slow=slow)
+        macd_signal = ta.trend.macd_signal(s, window_fast=fast, window_slow=slow, window_sign=signal)
+        macd_hist = ta.trend.macd_diff(s, window_fast=fast, window_slow=slow, window_sign=signal)
         
         return {
-            'macd': macd_line,
-            'signal': signal_line,
-            'histogram': histogram
+            'macd': macd_line.iloc[-1],
+            'signal': macd_signal.iloc[-1],
+            'histogram': macd_hist.iloc[-1]
         }
     
     def calculate_adx(self, candles: List[Dict], period: int = 5) -> float:
         """
-        Calculate ADX (Average Directional Index) - simplified version.
+        Calculate ADX (Average Directional Index).
         
         Args:
             candles: List of candle dicts with high, low, close
@@ -380,55 +345,12 @@ class IndicatorEngine:
         if len(candles) < period + 1:
             raise ValueError(f"Insufficient data for ADX{period}: need {period + 1}, have {len(candles)}")
         
-        # Simplified ADX calculation
-        # Calculate True Range and Directional Movement
-        tr_values = []
-        dm_plus = []
-        dm_minus = []
+        highs = pd.Series([c['high'] for c in candles])
+        lows = pd.Series([c['low'] for c in candles])
+        closes = pd.Series([c['close'] for c in candles])
         
-        for i in range(1, len(candles)):
-            high = candles[i]['high']
-            low = candles[i]['low']
-            prev_close = candles[i-1]['close']
-            prev_high = candles[i-1]['high']
-            prev_low = candles[i-1]['low']
-            
-            # True Range
-            tr = max(
-                high - low,
-                abs(high - prev_close),
-                abs(low - prev_close)
-            )
-            tr_values.append(tr)
-            
-            # Directional Movement
-            up_move = high - prev_high
-            down_move = prev_low - low
-            
-            dm_plus.append(up_move if up_move > down_move and up_move > 0 else 0)
-            dm_minus.append(down_move if down_move > up_move and down_move > 0 else 0)
-        
-        if len(tr_values) < period:
-            return 0.0
-        
-        # Average over period
-        avg_tr = sum(tr_values[-period:]) / period
-        avg_dm_plus = sum(dm_plus[-period:]) / period
-        avg_dm_minus = sum(dm_minus[-period:]) / period
-        
-        if avg_tr == 0:
-            return 0.0
-        
-        di_plus = (avg_dm_plus / avg_tr) * 100
-        di_minus = (avg_dm_minus / avg_tr) * 100
-        
-        di_sum = di_plus + di_minus
-        if di_sum == 0:
-            return 0.0
-        
-        dx = abs(di_plus - di_minus) / di_sum * 100
-        
-        return dx
+        adx = ta.trend.adx(highs, lows, closes, window=period)
+        return adx.iloc[-1]
     
     def calculate_bollinger_bands(self, prices: List[float], period: int = 20, std_dev: float = 2) -> Dict[str, float]:
         """
@@ -448,29 +370,42 @@ class IndicatorEngine:
         if len(prices) < period:
             raise ValueError(f"Insufficient data for BB{period}: need {period}, have {len(prices)}")
         
-        # Middle band is SMA
-        recent_prices = prices[-period:]
-        middle = sum(recent_prices) / period
-        
-        # Calculate standard deviation
-        variance = sum((p - middle) ** 2 for p in recent_prices) / period
-        std = variance ** 0.5
-        
-        # Upper and lower bands
-        upper = middle + (std_dev * std)
-        lower = middle - (std_dev * std)
-        width = upper - lower
+        s = pd.Series(prices)
+        bb_upper = ta.volatility.bollinger_hband(s, window=period, window_dev=std_dev)
+        bb_middle = ta.volatility.bollinger_mavg(s, window=period)
+        bb_lower = ta.volatility.bollinger_lband(s, window=period, window_dev=std_dev)
         
         return {
-            'upper': upper,
-            'middle': middle,
-            'lower': lower,
-            'width': width
+            'lower': bb_lower.iloc[-1],
+            'middle': bb_middle.iloc[-1],
+            'upper': bb_upper.iloc[-1],
+            'width': bb_upper.iloc[-1] - bb_lower.iloc[-1]
         }
+    
+    def _create_dataframe(self, symbol: str) -> pd.DataFrame:
+        """
+        Create DataFrame from candle data for pandas-ta calculations.
+        
+        Args:
+            symbol: Stock symbol
+            
+        Returns:
+            DataFrame with OHLC data
+        """
+        candles = list(self.candle_data[symbol])
+        
+        df = pd.DataFrame({
+            'open': [c['open'] for c in candles],
+            'high': [c['high'] for c in candles],
+            'low': [c['low'] for c in candles],
+            'close': [c['close'] for c in candles],
+        })
+        
+        return df
     
     def _calculate_indicators_for_symbol(self, symbol: str, suppress_warnings: bool = False) -> None:
         """
-        Calculate all indicators for a specific symbol.
+        Calculate all indicators for a specific symbol using ta library.
         
         Args:
             symbol: Stock symbol to calculate indicators for
@@ -484,77 +419,101 @@ class IndicatorEngine:
         if not candles:
             return
         
-        # Extract price data
-        closes = [c['close'] for c in candles]
-        opens = [c['open'] for c in candles]
-        current_price = closes[-1]
+        # Create DataFrame for calculations
+        df = self._create_dataframe(symbol)
         
-        # Initialize indicators dict for this symbol
+        if len(df) == 0:
+            return
+        
+        current_price = float(df['close'].iloc[-1])
+        
+        # Initialize indicators dict
         indicators = {}
         
         # Basic price data
         indicators['PRICE'] = current_price
         
         # Previous candle data
-        if len(candles) >= 2:
-            indicators['PREV_CLOSE'] = candles[-2]['close']
-            indicators['PREV_OPEN'] = candles[-2]['open']
+        if len(df) >= 2:
+            indicators['PREV_CLOSE'] = float(df['close'].iloc[-2])
+            indicators['PREV_OPEN'] = float(df['open'].iloc[-2])
         
         try:
             # Simple Moving Averages
-            ma_values = self.calculate_moving_averages(closes, self.ma_periods)
-            for period, ma_value in ma_values.items():
-                indicators[f'MA{period}'] = ma_value
+            for period in self.ma_periods:
+                if len(df) >= period:
+                    ma = ta.trend.sma_indicator(df['close'], window=period)
+                    if ma is not None and not pd.isna(ma.iloc[-1]):
+                        indicators[f'MA{period}'] = float(ma.iloc[-1])
             
             # Exponential Moving Averages
             for period in self.ema_periods:
-                if len(closes) >= period:
-                    ema_value = self.calculate_ema(closes, period)
-                    indicators[f'EMA{period}'] = ema_value
+                if len(df) >= period:
+                    ema = ta.trend.ema_indicator(df['close'], window=period)
+                    if ema is not None and not pd.isna(ema.iloc[-1]):
+                        indicators[f'EMA{period}'] = float(ema.iloc[-1])
             
             # MACD
-            if len(closes) >= self.macd_slow + self.macd_signal:
-                macd_result = self.calculate_macd(closes, self.macd_fast, self.macd_slow, self.macd_signal)
-                indicators['MACD'] = macd_result['macd']
-                indicators['MACD_SIGNAL'] = macd_result['signal']
-                indicators['MACD_HIST'] = macd_result['histogram']
+            if len(df) >= self.macd_slow + self.macd_signal:
+                try:
+                    macd_line = ta.trend.macd(df['close'], window_fast=self.macd_fast, window_slow=self.macd_slow)
+                    macd_signal = ta.trend.macd_signal(df['close'], window_fast=self.macd_fast, window_slow=self.macd_slow, window_sign=self.macd_signal)
+                    macd_diff = ta.trend.macd_diff(df['close'], window_fast=self.macd_fast, window_slow=self.macd_slow, window_sign=self.macd_signal)
+                    
+                    if (macd_line is not None and not pd.isna(macd_line.iloc[-1])):
+                        indicators['MACD'] = float(macd_line.iloc[-1])
+                        indicators['MACD_SIGNAL'] = float(macd_signal.iloc[-1])
+                        indicators['MACD_HIST'] = float(macd_diff.iloc[-1])
+                except:
+                    pass
             
             # RSI
-            if len(closes) >= self.rsi_period + 1:
-                rsi_value = self.calculate_rsi(closes, self.rsi_period)
-                indicators['RSI14'] = rsi_value
+            if len(df) >= self.rsi_period + 1:
+                rsi = ta.momentum.rsi(df['close'], window=self.rsi_period)
+                if rsi is not None and not pd.isna(rsi.iloc[-1]):
+                    indicators['RSI14'] = float(rsi.iloc[-1])
             
             # ADX
-            if len(candles) >= self.adx_period + 1:
-                adx_value = self.calculate_adx(candles, self.adx_period)
-                indicators['ADX5'] = adx_value
+            if len(df) >= self.adx_period + 1:
+                try:
+                    adx = ta.trend.adx(high=df['high'], low=df['low'], close=df['close'], window=self.adx_period)
+                    if adx is not None and not pd.isna(adx.iloc[-1]):
+                        indicators['ADX5'] = float(adx.iloc[-1])
+                except:
+                    pass
             
             # Bollinger Bands
-            if len(closes) >= self.bb_period:
-                bb_result = self.calculate_bollinger_bands(closes, self.bb_period, self.bb_std_dev)
-                indicators['BB_UPPER'] = bb_result['upper']
-                indicators['BB_MIDDLE'] = bb_result['middle']
-                indicators['BB_LOWER'] = bb_result['lower']
-                indicators['BB_WIDTH'] = bb_result['width']
+            if len(df) >= self.bb_period:
+                try:
+                    bb_upper = ta.volatility.bollinger_hband(df['close'], window=self.bb_period, window_dev=self.bb_std_dev)
+                    bb_middle = ta.volatility.bollinger_mavg(df['close'], window=self.bb_period)
+                    bb_lower = ta.volatility.bollinger_lband(df['close'], window=self.bb_period, window_dev=self.bb_std_dev)
+                    
+                    if (bb_upper is not None and not pd.isna(bb_upper.iloc[-1])):
+                        indicators['BB_UPPER'] = float(bb_upper.iloc[-1])
+                        indicators['BB_MIDDLE'] = float(bb_middle.iloc[-1])
+                        indicators['BB_LOWER'] = float(bb_lower.iloc[-1])
+                        indicators['BB_WIDTH'] = indicators['BB_UPPER'] - indicators['BB_LOWER']
+                except:
+                    pass
             
             # Calculated metrics
             if 'EMA20' in indicators:
                 ema20 = indicators['EMA20']
                 if ema20 != 0:
                     price_ema20_diff_pct = abs(current_price - ema20) / ema20
-                    indicators['PRICE_EMA20_DIFF_PCT'] = price_ema20_diff_pct
+                    indicators['PRICE_EMA20_DIFF_PCT'] = float(price_ema20_diff_pct)
             
             # Add previous values with _PREV suffix
             if symbol in self.prev_indicators:
                 prev = self.prev_indicators[symbol]
                 for key, value in prev.items():
-                    if key not in ['PRICE_EMA20_DIFF_PCT']:  # Don't duplicate calculated metrics
+                    if key not in ['PRICE_EMA20_DIFF_PCT']:
                         indicators[f'{key}_PREV'] = value
-            
-        except ValueError as e:
-            # Handle insufficient data gracefully
+        
+        except Exception as e:
             if not suppress_warnings:
-                self.logger.warning(f"Insufficient data for {symbol}: {e}")
+                self.logger.warning(f"Error calculating indicators for {symbol}: {e}")
         
         # Store calculated indicators
         self.indicators[symbol] = indicators
