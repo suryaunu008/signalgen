@@ -112,6 +112,9 @@ class SignalGenApp {
       // Load settings
       const settings = await API.getAllSettings();
       this.populateSettingsForm(settings);
+      
+      // Load and set current timeframe
+      await this.loadTimeframe();
     } catch (error) {
       console.error("Failed to load initial data:", error);
       throw error;
@@ -129,6 +132,11 @@ class SignalGenApp {
     document
       .getElementById("stop-engine")
       .addEventListener("click", () => this.stopEngine());
+
+    // Timeframe selector
+    document
+      .getElementById("timeframe-select")
+      .addEventListener("change", (e) => this.handleTimeframeChange(e));
 
     // Rule builder
     document
@@ -385,9 +393,40 @@ class SignalGenApp {
     // Update control buttons
     const startBtn = document.getElementById("start-engine");
     const stopBtn = document.getElementById("stop-engine");
+    const timeframeSelect = document.getElementById("timeframe-select");
+    const watchlistSelect = document.getElementById("watchlist-select");
+    const ruleSelect = document.getElementById("rule-select");
 
     startBtn.disabled = status.is_running;
     stopBtn.disabled = !status.is_running;
+    
+    // Disable timeframe, watchlist, and rule selectors when engine is running
+    if (timeframeSelect) {
+      timeframeSelect.disabled = status.is_running;
+      if (status.is_running) {
+        timeframeSelect.classList.add('opacity-50', 'cursor-not-allowed');
+      } else {
+        timeframeSelect.classList.remove('opacity-50', 'cursor-not-allowed');
+      }
+    }
+    
+    if (watchlistSelect) {
+      watchlistSelect.disabled = status.is_running;
+      if (status.is_running) {
+        watchlistSelect.classList.add('opacity-50', 'cursor-not-allowed');
+      } else {
+        watchlistSelect.classList.remove('opacity-50', 'cursor-not-allowed');
+      }
+    }
+    
+    if (ruleSelect) {
+      ruleSelect.disabled = status.is_running;
+      if (status.is_running) {
+        ruleSelect.classList.add('opacity-50', 'cursor-not-allowed');
+      } else {
+        ruleSelect.classList.remove('opacity-50', 'cursor-not-allowed');
+      }
+    }
 
     // If engine just transitioned from running to stopped, clear price table (frontend only)
     if (wasRunning && !status.is_running) {
@@ -725,6 +764,63 @@ class SignalGenApp {
     } catch (error) {
       console.error("Failed to stop engine:", error);
       this.showToast(`Failed to stop engine: ${error.message}`, "error");
+    } finally {
+      this.hideLoading();
+    }
+  }
+
+  /**
+   * Load current timeframe setting
+   */
+  async loadTimeframe() {
+    try {
+      const response = await API.getAvailableTimeframes();
+      const currentTimeframe = response.current || '1m';
+      
+      // Set the dropdown to current value
+      const timeframeSelect = document.getElementById("timeframe-select");
+      if (timeframeSelect) {
+        timeframeSelect.value = currentTimeframe;
+      }
+      
+      console.log(`Current timeframe: ${currentTimeframe}`);
+    } catch (error) {
+      console.error("Failed to load timeframe:", error);
+    }
+  }
+
+  /**
+   * Handle timeframe change
+   */
+  async handleTimeframeChange(event) {
+    const newTimeframe = event.target.value;
+    
+    try {
+      // Check if engine is running
+      if (this.engineRunning) {
+        this.showToast(
+          "Cannot change timeframe while engine is running. Stop the engine first.",
+          "warning"
+        );
+        // Revert to current value
+        await this.loadTimeframe();
+        return;
+      }
+
+      this.showLoading();
+
+      await API.changeTimeframe(newTimeframe);
+
+      this.showToast(
+        `Timeframe changed to ${newTimeframe}. Historical data will be re-aggregated when engine starts.`,
+        "success"
+      );
+    } catch (error) {
+      console.error("Failed to change timeframe:", error);
+      this.showToast(`Failed to change timeframe: ${error.message}`, "error");
+      
+      // Revert to previous value
+      await this.loadTimeframe();
     } finally {
       this.hideLoading();
     }

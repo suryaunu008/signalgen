@@ -1,4 +1,2 @@
-- Implement selector untuk memilih timeframe candles (1m, 5m, 15m, 1h, 4h, 1d)
-- Implement candle builder agar indikator dihitung berdasarkan timeframe yang dipilih.
 - tambahkan fitur untuk melihat candlestick chart dalam dialog. Integrasikan library charting untuk visualisasi data.
 - Pastikan chart dapat menampilkan data historis sesuai dengan timeframe yang dipilih.

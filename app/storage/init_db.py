@@ -4,10 +4,17 @@ Database Initialization Script
 This script initializes the SQLite database with default data for the SignalGen system.
 It creates the database schema and seeds it with the default scalping rule and initial settings.
 
-Default Rule (as specified in PROJECT_SPRINT_PHASE1.md):
+Default Rule (Updated for Advanced Scalping):
 - NAME: "Default Scalping"
 - TYPE: "system"
-- LOGIC: "AND" with 13 conditions (EMA crossovers, MACD, RSI, ADX momentum)
+- LOGIC: "AND" with 11 conditions
+- CONDITIONS:
+  * EMA6 CROSS_UP EMA10 (momentum entry)
+  * PRICE >= EMA20 AND PRICE_EMA20_DIFF_PCT <= 0.002 (max 0.2% from EMA20)
+  * RSI14 > RSI14_PREV AND 38 < RSI14 < 55 (rising momentum)
+  * ADX5 >= 15 AND ADX5 > ADX5_PREV (strong trend)
+  * REL_VOLUME_20 >= 1.3 (volume confirmation)
+  * MACD_HIST >= MACD_HIST_PREV (histogram rising)
 - IS_SYSTEM: true (readonly, cannot be deleted)
 
 Initial Settings:
@@ -72,24 +79,27 @@ def _seed_default_rule(repo: SQLiteRepository) -> None:
         "type": "system",
         "logic": "AND",
         "conditions": [
-            {"left": "PREV_CLOSE", "op": ">", "right": "PREV_OPEN"},
-            
+            # EMA 6/10 Crossover
             {"left": "EMA6", "op": "CROSS_UP", "right": "EMA10"},
-            {"left": "EMA6", "op": "CROSS_UP", "right": "EMA20"},
             
+            # Price near EMA20 (max 0.2% away)
             {"left": "PRICE", "op": ">=", "right": "EMA20"},
-            {"left": "PRICE_EMA20_DIFF_PCT", "op": "<=", "right": 0.01},
+            {"left": "PRICE_EMA20_DIFF_PCT", "op": "<=", "right": 0.002},  # Max 0.2%
             
-            {"left": "MACD_HIST", "op": ">", "right": "MACD_HIST_PREV"},
-            {"left": "MACD_HIST", "op": ">", "right": 0},
-            {"left": "MACD_HIST_PREV", "op": ">", "right": 0},
-            
-            {"left": "ADX5", "op": ">", "right": "ADX5_PREV"},
-            {"left": "ADX5", "op": ">", "right": 0},
-            
+            # RSI momentum (38 < RSI < 55, rising)
             {"left": "RSI14", "op": ">", "right": "RSI14_PREV"},
-            {"left": "RSI14_PREV", "op": "<", "right": 40},
-            {"left": "RSI14", "op": ">", "right": 40}
+            {"left": "RSI14", "op": ">", "right": 38},
+            {"left": "RSI14", "op": "<", "right": 55},
+            
+            # ADX trend strength (>= 15, rising)
+            {"left": "ADX5", "op": ">=", "right": 15},
+            {"left": "ADX5", "op": ">", "right": "ADX5_PREV"},
+            
+            # Volume confirmation (>= 1.3x average)
+            {"left": "REL_VOLUME_20", "op": ">=", "right": 1.3},
+            
+            # MACD histogram rising
+            {"left": "MACD_HIST", "op": ">=", "right": "MACD_HIST_PREV"}
         ],
         "cooldown_sec": 60
     }
@@ -119,7 +129,8 @@ def _seed_initial_settings(repo: SQLiteRepository) -> None:
         "ibkr_client_id": 1,
         "data_feed_type": "live",
         "bar_size": "5 secs",
-        "websocket_port": 8765
+        "websocket_port": 8765,
+        "timeframe": "1m"  # Default timeframe: 1 minute
     }
     
     for key, value in initial_settings.items():

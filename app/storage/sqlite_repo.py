@@ -104,10 +104,18 @@ class SQLiteRepository:
                     symbol TEXT NOT NULL,
                     price REAL NOT NULL,
                     rule_id INTEGER,
+                    indicators TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (rule_id) REFERENCES rules(id) ON DELETE SET NULL
                 )
             ''')
+            
+            # Check if indicators column exists, add it if not (migration)
+            cursor.execute("PRAGMA table_info(signals)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'indicators' not in columns:
+                cursor.execute('ALTER TABLE signals ADD COLUMN indicators TEXT')
+                self.logger.info("Added indicators column to signals table")
             
             # Create settings table
             cursor.execute('''
@@ -452,21 +460,28 @@ class SQLiteRepository:
         Save trading signal to database.
         
         Args:
-            signal_data: Signal data dictionary
+            signal_data: Signal data dictionary with optional indicators
             
         Returns:
             int: ID of saved signal
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            
+            # Convert indicators dict to JSON string if present
+            indicators_json = None
+            if 'indicators' in signal_data and signal_data['indicators']:
+                indicators_json = json.dumps(signal_data['indicators'])
+            
             cursor.execute('''
-                INSERT INTO signals (time, symbol, price, rule_id)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO signals (time, symbol, price, rule_id, indicators)
+                VALUES (?, ?, ?, ?, ?)
             ''', (
                 signal_data['timestamp'],
                 signal_data['symbol'],
                 signal_data['price'],
-                signal_data.get('rule_id')
+                signal_data.get('rule_id'),
+                indicators_json
             ))
             conn.commit()
             return cursor.lastrowid
@@ -480,7 +495,7 @@ class SQLiteRepository:
             symbol: Filter by symbol (optional)
             
         Returns:
-            List[Dict]: List of signals
+            List[Dict]: List of signals with parsed indicators
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -500,7 +515,17 @@ class SQLiteRepository:
                 ''', (limit,))
             
             rows = cursor.fetchall()
-            return [dict(row) for row in rows]
+            signals = []
+            for row in rows:
+                signal = dict(row)
+                # Parse indicators JSON if present
+                if signal.get('indicators'):
+                    try:
+                        signal['indicators'] = json.loads(signal['indicators'])
+                    except json.JSONDecodeError:
+                        signal['indicators'] = None
+                signals.append(signal)
+            return signals
     
     def delete_signal(self, signal_id: int) -> bool:
         """

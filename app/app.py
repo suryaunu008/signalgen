@@ -179,8 +179,18 @@ class SignalGenApp:
         self.templates = Jinja2Templates(directory=str(templates_dir)) if templates_dir.exists() else None
         
         self.repository = SQLiteRepository(db_path)
+        
+        # Initialize database schema and default data
+        # Must be done before accessing settings or creating engine
+        self.repository.initialize_database()
+        from .storage.init_db import initialize_database as init_db
+        init_db(db_path)
+        
         self.broadcaster = SocketIOBroadcaster()
-        self.scalping_engine = ScalpingEngine()
+        
+        # Get timeframe from settings, default to '1m'
+        timeframe = self.repository.get_setting('timeframe') or '1m'
+        self.scalping_engine = ScalpingEngine(timeframe=timeframe)
         
         self.logger = logging.getLogger(__name__)
         
@@ -758,7 +768,7 @@ class SignalGenApp:
                 common_keys = [
                     'ib_host', 'ib_port', 'ib_client_id',
                     'max_watchlist_symbols', 'default_cooldown',
-                    'bar_size', 'ui_theme'
+                    'bar_size', 'ui_theme', 'timeframe'
                 ]
                 
                 for key in common_keys:
@@ -782,7 +792,7 @@ class SignalGenApp:
                 valid_keys = [
                     'ib_host', 'ib_port', 'ib_client_id',
                     'max_watchlist_symbols', 'default_cooldown',
-                    'bar_size', 'ui_theme'
+                    'bar_size', 'ui_theme', 'timeframe'
                 ]
                 
                 if key not in valid_keys:
@@ -790,6 +800,15 @@ class SignalGenApp:
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=f"Invalid setting key: {key}"
                     )
+                
+                # Special validation for timeframe
+                if key == 'timeframe':
+                    from .core.candle_builder import CandleBuilder
+                    if not CandleBuilder.validate_timeframe(setting_update.value):
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Invalid timeframe: {setting_update.value}. Must be one of {CandleBuilder.get_supported_timeframes()}"
+                        )
                 
                 self.repository.set_setting(key, setting_update.value)
                 
@@ -807,6 +826,78 @@ class SignalGenApp:
                 raise
             except Exception as e:
                 self.logger.error(f"Error setting {key}: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error"
+                )
+        
+        # Timeframe endpoints
+        @self.app.get("/api/timeframes")
+        def get_available_timeframes():
+            """Get list of available timeframes."""
+            try:
+                from .core.candle_builder import CandleBuilder
+                return {
+                    "timeframes": CandleBuilder.get_supported_timeframes(),
+                    "current": self.scalping_engine.get_timeframe()
+                }
+            except Exception as e:
+                self.logger.error(f"Error getting timeframes: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error"
+                )
+        
+        @self.app.put("/api/timeframe")
+        async def change_timeframe(setting_update: SettingsUpdate):
+            """Change the active timeframe. Engine must be stopped."""
+            try:
+                from .core.candle_builder import CandleBuilder
+                
+                new_timeframe = setting_update.value
+                
+                # Validate timeframe
+                if not CandleBuilder.validate_timeframe(new_timeframe):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Invalid timeframe: {new_timeframe}. Must be one of {CandleBuilder.get_supported_timeframes()}"
+                    )
+                
+                # Check if engine is running
+                if self.scalping_engine.is_running:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Cannot change timeframe while engine is running. Stop the engine first."
+                    )
+                
+                # Change timeframe in engine
+                self.scalping_engine.change_timeframe(new_timeframe)
+                
+                # Save to settings
+                self.repository.set_setting('timeframe', new_timeframe)
+                
+                # Broadcast timeframe change
+                asyncio.create_task(
+                    self.broadcaster.broadcast_error({
+                        'type': 'timeframe_change',
+                        'message': f'Timeframe changed to {new_timeframe}',
+                        'data': {'timeframe': new_timeframe}
+                    })
+                )
+                
+                return {
+                    "message": "Timeframe changed successfully",
+                    "timeframe": new_timeframe
+                }
+            except HTTPException:
+                raise
+            except RuntimeError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(e)
+                )
+            except Exception as e:
+                self.logger.error(f"Error changing timeframe: {e}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Internal server error"
@@ -978,9 +1069,13 @@ class SignalGenApp:
             }
     
     def initialize_database(self) -> None:
-        """Initialize the database."""
-        self.repository.initialize_database()
-        self.logger.info("Database initialized")
+        """
+        Initialize the database.
+        
+        Note: Database is already initialized during __init__.
+        This method is kept for backward compatibility.
+        """
+        self.logger.info("Database already initialized during app startup")
     
     def get_app(self) -> FastAPI:
         """

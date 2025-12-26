@@ -49,7 +49,7 @@ class ScalpingEngine:
     generation and broadcasting, with proper state management and error handling.
     """
     
-    def __init__(self, ib_host: str = '127.0.0.1', ib_port: int = 7497, ib_client_id: int = 1):
+    def __init__(self, ib_host: str = '127.0.0.1', ib_port: int = 7497, ib_client_id: int = 1, timeframe: str = '1m'):
         """
         Initialize scalping engine with IBKR connection parameters.
         
@@ -57,6 +57,7 @@ class ScalpingEngine:
             ib_host: IBKR TWS/Gateway host address
             ib_port: IBKR TWS/Gateway port (7497 for TWS, 4002 for Gateway)
             ib_client_id: Client ID for IBKR connection (will be overridden with random ID)
+            timeframe: Candle timeframe (1m, 5m, 15m, 1h, 4h, 1d)
         """
         self.ib = IB()
         self.ib_host = ib_host
@@ -64,8 +65,9 @@ class ScalpingEngine:
         # Use random client ID to avoid conflicts on reconnect
         self.ib_client_id = None  # Will be set on each connect
         
+        self.timeframe = timeframe
         self.rule_engine = RuleEngine()
-        self.indicator_engine = IndicatorEngine()
+        self.indicator_engine = IndicatorEngine(timeframe=timeframe)
         self.state_machine = StateMachine()
         self.repository = SQLiteRepository()
         self.broadcaster = SocketIOBroadcaster()
@@ -323,6 +325,7 @@ class ScalpingEngine:
     async def request_historical_data(self, symbol: str, contract: Contract) -> bool:
         """
         Request historical bar data to populate indicators and initial prices.
+        Adjusts duration and bar size based on selected timeframe.
         
         Args:
             symbol: Stock symbol
@@ -332,17 +335,32 @@ class ScalpingEngine:
             bool: True if historical data retrieved successfully
         """
         try:
-            self.logger.info(f"Requesting historical data for {symbol}...")
+            self.logger.info(f"Requesting historical data for {symbol} with timeframe {self.timeframe}...")
             
-            # Request last 1 hour of 5-second bars to populate indicator engine
-            # This gives us enough data for MA20 (20 bars needed)
-            # Duration: '3600 S' = 1 hour, BarSize: '5 secs', WhatToShow: 'MIDPOINT'
+            # Determine duration and bar size based on timeframe
+            # Need enough bars for MA200 (200 candles) + buffer
+            timeframe_config = {
+                '1m': {'duration': '1 D', 'bar_size': '1 min'},      # 1 day of 1-min bars (~390 bars in trading day)
+                '5m': {'duration': '5 D', 'bar_size': '5 mins'},     # 5 days of 5-min bars (~390 bars)
+                '15m': {'duration': '2 W', 'bar_size': '15 mins'},   # 2 weeks of 15-min bars (~260 bars)
+                '1h': {'duration': '2 M', 'bar_size': '1 hour'},     # 2 months of 1-hour bars (~260 bars)
+                '4h': {'duration': '6 M', 'bar_size': '4 hours'},    # 6 months of 4-hour bars (~260 bars)
+                '1d': {'duration': '1 Y', 'bar_size': '1 day'},      # 1 year of daily bars (~252 bars)
+            }
+            
+            config = timeframe_config.get(self.timeframe, {'duration': '1 D', 'bar_size': '1 min'})
+            
+            self.logger.info(
+                f"Fetching historical data: duration={config['duration']}, "
+                f"bar_size={config['bar_size']}"
+            )
+            
             bars = await self.ib.reqHistoricalDataAsync(
                 contract=contract,
                 endDateTime='',  # Current time
-                durationStr='3600 S',  # 1 hour
-                barSizeSetting='5 secs',
-                whatToShow='MIDPOINT',
+                durationStr=config['duration'],
+                barSizeSetting=config['bar_size'],
+                whatToShow='TRADES',  # Changed from MIDPOINT to get volume data
                 useRTH=False,  # Include extended hours
                 formatDate=1
             )
@@ -353,16 +371,23 @@ class ScalpingEngine:
             
             self.logger.info(f"Received {len(bars)} historical bars for {symbol}")
             
-            # Prepare historical price data for bulk update
-            price_data_list = []
+            # Prepare historical candle data for bulk update
+            candle_data_list = []
             for bar in bars:
                 if bar.close > 0:
                     timestamp = bar.date.timestamp() if hasattr(bar.date, 'timestamp') else time.time()
-                    price_data_list.append((bar.close, timestamp))
+                    candle_data_list.append({
+                        'open': bar.open,
+                        'high': bar.high,
+                        'low': bar.low,
+                        'close': bar.close,
+                        'volume': getattr(bar, 'volume', 0),
+                        'timestamp': timestamp
+                    })
             
             # Bulk update indicator engine with historical bars (more efficient)
-            if price_data_list:
-                self.indicator_engine.bulk_update_price_data(symbol, price_data_list)
+            if candle_data_list:
+                self.indicator_engine.bulk_update_candle_data(symbol, candle_data_list)
             
             # Send initial price to frontend if we have data
             if bars:
@@ -651,20 +676,27 @@ class ScalpingEngine:
                 self.logger.warning(f"Invalid price data for {symbol}: {bar_data.close}")
                 return
             
-            # Update price data in indicator engine
+            # Update candle data in indicator engine using OHLC from bar
             # RealTimeBar has 'time' attribute, not 'date'
+            # RealTimeBar uses 'open_' (with underscore), not 'open'
             timestamp = bar_data.time.timestamp() if bar_data.time else time.time()
-            price = bar_data.close
             
-            self.indicator_engine.update_price_data(
+            # Update candle builder with full OHLC data
+            # Note: RealTimeBar attributes are open_, high, low, close (open has underscore!)
+            # RealTimeBar also has volume attribute
+            candle_completed = self.indicator_engine.update_candle_data(
                 symbol=symbol,
-                price=price,
-                timestamp=timestamp
+                open_price=bar_data.open_,  # RealTimeBar uses open_ (with underscore)
+                high=bar_data.high,
+                low=bar_data.low,
+                close=bar_data.close,
+                timestamp=timestamp,
+                volume=getattr(bar_data, 'volume', 0)  # Include volume from real-time bar
             )
             
             # CRITICAL: Broadcast price update to UI from bars (primary source)
-            asyncio.create_task(self._broadcast_price_async(symbol, price, timestamp))
-            self.logger.debug(f"Bar update: {symbol} @ {price:.2f}, hasNewBar={hasNewBar}")
+            asyncio.create_task(self._broadcast_price_async(symbol, bar_data.close, timestamp))
+            self.logger.debug(f"Bar update: {symbol} @ {bar_data.close:.2f}, hasNewBar={hasNewBar}, candle_completed={candle_completed}")
             
             # Get current indicators for this symbol
             indicators = self.indicator_engine.get_indicators(symbol)
@@ -686,8 +718,8 @@ class ScalpingEngine:
                     rule_result = self.rule_engine.evaluate(rule_to_evaluate, indicators)
                     
                     if rule_result:
-                        # Generate signal
-                        self._generate_signal(symbol, bar_data.close, timestamp)
+                        # Generate signal with indicator values for debugging
+                        self._generate_signal(symbol, bar_data.close, timestamp, indicators)
                         
                 except Exception as e:
                     self.logger.error(f"Error evaluating rule for {symbol}: {e}")
@@ -731,23 +763,59 @@ class ScalpingEngine:
         self.symbol_cooldowns[symbol] = time.time() + cooldown_seconds
         self.logger.debug(f"Started {cooldown_seconds}s cooldown for {symbol}")
     
-    def _generate_signal(self, symbol: str, price: float, timestamp: float) -> None:
+    def _generate_signal(self, symbol: str, price: float, timestamp: float, indicators: Dict[str, float]) -> None:
         """
-        Generate and broadcast trading signal.
+        Generate and broadcast trading signal with indicator values.
         
         Args:
             symbol: Symbol that generated the signal
             price: Current price at signal generation
             timestamp: Unix timestamp of signal generation
+            indicators: Current indicator values at signal generation
         """
         try:
-            # Create signal data
+            # Create signal data with indicator values for debugging
             signal_data = {
                 'symbol': symbol,
                 'price': price,
                 'rule_id': self.active_rule['id'],
-                'timestamp': datetime.fromtimestamp(timestamp).isoformat()
+                'timestamp': datetime.fromtimestamp(timestamp).isoformat(),
+                'indicators': indicators.copy()  # Include all indicator values
             }
+            
+            # Log detailed signal generation with relevant indicators
+            rule_name = self.active_rule.get('name', 'Unknown')
+            self.logger.info(
+                f"SIGNAL GENERATED | Symbol: {symbol} | Price: {price:.2f} | Rule: {rule_name}"
+            )
+            
+            # Log key indicators based on rule conditions
+            conditions = self.active_rule.get('definition', {}).get('conditions', [])
+            if not conditions:
+                conditions = self.active_rule.get('conditions', [])
+            
+            self.logger.info(f"Indicator Values at Signal:")
+            for condition in conditions:
+                left = condition.get('left', '')
+                right = condition.get('right', '')
+                op = condition.get('op', '')
+                
+                # Log left operand value
+                if left in indicators:
+                    self.logger.info(f"   {left} = {indicators[left]:.4f}")
+                
+                # Log right operand value if it's an indicator
+                if isinstance(right, str) and right in indicators:
+                    self.logger.info(f"   {right} = {indicators[right]:.4f}")
+                
+                # Log the condition evaluation
+                left_val = indicators.get(left, left)
+                right_val = indicators.get(right, right) if isinstance(right, str) else right
+                self.logger.info(f"   Condition: {left} ({left_val:.4f}) {op} {right} ({right_val:.4f})")
+            
+            # Also log PRICE for reference
+            if 'PRICE' in indicators:
+                self.logger.info(f"   PRICE = {indicators['PRICE']:.4f}")
             
             # Store signal in database
             signal_id = self.repository.save_signal(signal_data)
@@ -958,3 +1026,31 @@ class ScalpingEngine:
         
         # Reconnect
         return await self.connect_to_ibkr()
+    
+    def change_timeframe(self, new_timeframe: str) -> None:
+        """
+        Change the active timeframe for candle aggregation.
+        Note: Engine should be stopped before changing timeframe.
+        
+        Args:
+            new_timeframe: New timeframe to use (1m, 5m, 15m, 1h, 4h, 1d)
+            
+        Raises:
+            ValueError: If timeframe is invalid
+            RuntimeError: If engine is running
+        """
+        if self.is_running:
+            raise RuntimeError("Cannot change timeframe while engine is running. Stop the engine first.")
+        
+        self.timeframe = new_timeframe
+        self.indicator_engine.change_timeframe(new_timeframe)
+        self.logger.info(f"Timeframe changed to {new_timeframe}")
+    
+    def get_timeframe(self) -> str:
+        """
+        Get the current timeframe.
+        
+        Returns:
+            str: Current timeframe (e.g., '1m', '5m')
+        """
+        return self.timeframe

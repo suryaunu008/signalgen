@@ -37,6 +37,8 @@ import pandas as pd
 import numpy as np
 import ta
 
+from .candle_builder import CandleBuilder
+
 
 class IndicatorEngine:
     """
@@ -46,14 +48,17 @@ class IndicatorEngine:
     Thread-safe operations suitable for async environments.
     """
     
-    def __init__(self, max_history: int = 250):
+    def __init__(self, max_history: int = 250, timeframe: str = '1m'):
         """
         Initialize the indicator engine.
         
         Args:
             max_history: Maximum number of candle periods to store (default 250 for MA200)
+            timeframe: Selected timeframe for candle aggregation (1m, 5m, 15m, 1h, 4h, 1d)
         """
         self.max_history = max_history
+        self.timeframe = timeframe
+        self.candle_builder = CandleBuilder(timeframe=timeframe, max_candles=max_history)
         self.candle_data: Dict[str, deque] = {}  # Symbol -> deque of candle dicts (OHLC)
         self.indicators: Dict[str, Dict[str, float]] = {}  # Symbol -> indicator values
         self.prev_indicators: Dict[str, Dict[str, float]] = {}  # Symbol -> previous indicator values
@@ -83,6 +88,7 @@ class IndicatorEngine:
                 self.candle_data[symbol] = deque(maxlen=self.max_history)
                 self.indicators[symbol] = {}
                 self.prev_indicators[symbol] = {}
+                self.candle_builder.initialize_symbol(symbol)
                 self.logger.debug(f"Initialized indicator data for symbol: {symbol}")
     
     def clear_symbol_data(self, symbol: str) -> None:
@@ -104,11 +110,49 @@ class IndicatorEngine:
             if symbol in self.prev_indicators:
                 del self.prev_indicators[symbol]
                 self.logger.debug(f"Cleared previous indicator data for symbol: {symbol}")
+            
+            self.candle_builder.clear_symbol_data(symbol)
+    
+    def change_timeframe(self, new_timeframe: str) -> None:
+        """
+        Change the active timeframe. This will clear all candle data and restart aggregation.
+        
+        Args:
+            new_timeframe: New timeframe to use (1m, 5m, 15m, 1h, 4h, 1d)
+            
+        Raises:
+            ValueError: If timeframe is not supported
+        """
+        with self.lock:
+            if not CandleBuilder.validate_timeframe(new_timeframe):
+                raise ValueError(f"Invalid timeframe: {new_timeframe}")
+            
+            self.timeframe = new_timeframe
+            self.candle_builder.change_timeframe(new_timeframe)
+            
+            # Clear all candle data to restart with new timeframe
+            for symbol in list(self.candle_data.keys()):
+                self.candle_data[symbol].clear()
+                if symbol in self.indicators:
+                    self.indicators[symbol].clear()
+                if symbol in self.prev_indicators:
+                    self.prev_indicators[symbol].clear()
+            
+            self.logger.info(f"Timeframe changed to {new_timeframe}")
+    
+    def get_timeframe(self) -> str:
+        """
+        Get the current timeframe.
+        
+        Returns:
+            str: Current timeframe (e.g., '1m', '5m')
+        """
+        return self.timeframe
     
     def update_candle_data(self, symbol: str, open_price: float, high: float, low: float, 
-                          close: float, timestamp: Optional[float] = None) -> None:
+                          close: float, timestamp: Optional[float] = None, volume: int = 0) -> bool:
         """
-        Add new candle data for a symbol.
+        Add new candle data for a symbol. Uses candle builder to aggregate based on timeframe.
         
         Args:
             symbol: Stock symbol
@@ -117,6 +161,10 @@ class IndicatorEngine:
             low: Candle low price
             close: Candle close price
             timestamp: Unix timestamp (defaults to current time)
+            volume: Trading volume (defaults to 0)
+            
+        Returns:
+            bool: True if a new aggregated candle was completed, False otherwise
             
         Raises:
             ValueError: If price is invalid
@@ -132,24 +180,27 @@ class IndicatorEngine:
             if symbol not in self.candle_data:
                 self.initialize_symbol(symbol)
             
-            # Store previous indicator values before updating
-            if symbol in self.indicators and self.indicators[symbol]:
-                self.prev_indicators[symbol] = self.indicators[symbol].copy()
+            # Add bar to candle builder with volume
+            candle_completed, completed_candle = self.candle_builder.add_bar(
+                symbol, open_price, high, low, close, timestamp, volume
+            )
             
-            # Add new candle data
-            candle = {
-                'open': open_price,
-                'high': high,
-                'low': low,
-                'close': close,
-                'timestamp': timestamp
-            }
-            self.candle_data[symbol].append(candle)
+            # If a candle was completed, add it to our storage and recalculate indicators
+            if candle_completed and completed_candle:
+                # Store previous indicator values before updating
+                if symbol in self.indicators and self.indicators[symbol]:
+                    self.prev_indicators[symbol] = self.indicators[symbol].copy()
+                
+                # Add completed candle to our storage
+                self.candle_data[symbol].append(completed_candle)
+                
+                # Calculate indicators for this symbol
+                self._calculate_indicators_for_symbol(symbol)
+                
+                self.logger.debug(f"Completed {self.timeframe} candle for {symbol}: C={completed_candle['close']}")
+                return True
             
-            # Calculate indicators for this symbol
-            self._calculate_indicators_for_symbol(symbol)
-            
-            self.logger.debug(f"Updated candle data for {symbol}: O={open_price}, H={high}, L={low}, C={close}")
+            return False
     
     def update_price_data(self, symbol: str, price: float, timestamp: Optional[float] = None) -> None:
         """
@@ -169,6 +220,7 @@ class IndicatorEngine:
     def bulk_update_candle_data(self, symbol: str, candles: List[Dict]) -> None:
         """
         Bulk update candle data for a symbol (used for historical data).
+        Uses candle builder to aggregate into selected timeframe.
         
         Args:
             symbol: Stock symbol
@@ -179,15 +231,54 @@ class IndicatorEngine:
             if symbol not in self.candle_data:
                 self.initialize_symbol(symbol)
             
-            # Add all historical candles
+            # Add all historical bars through candle builder
             for candle in candles:
                 if all(k in candle for k in ['open', 'high', 'low', 'close']):
-                    self.candle_data[symbol].append(candle)
+                    timestamp = candle.get('timestamp', time.time())
+                    
+                    # Add bar to candle builder
+                    candle_completed, completed_candle = self.candle_builder.add_bar(
+                        symbol,
+                        candle['open'],
+                        candle['high'],
+                        candle['low'],
+                        candle['close'],
+                        timestamp,
+                        candle.get('volume', 0)
+                    )
+                    
+                    # If a candle was completed, add it to our storage
+                    if candle_completed and completed_candle:
+                        self.candle_data[symbol].append(completed_candle)
             
             # Calculate indicators once after all data is loaded
-            self._calculate_indicators_for_symbol(symbol, suppress_warnings=True)
+            # Enable warnings for first calculation to debug volume issues
+            self._calculate_indicators_for_symbol(symbol, suppress_warnings=False)
             
-            self.logger.info(f"Bulk updated {len(candles)} candles for {symbol}")
+            # IMPORTANT: Initialize prev_indicators from second-to-last candle for CROSS_UP/CROSS_DOWN operators
+            # This ensures that when we start receiving real-time data, we have previous values available
+            if len(self.candle_data[symbol]) >= 2:
+                # Convert deque to list for slicing (deque doesn't support slicing)
+                candles_list = list(self.candle_data[symbol])
+                temp_candles = candles_list[:-1]  # All except last
+                
+                if temp_candles:
+                    # Save current candles
+                    current_candles = self.candle_data[symbol]
+                    # Set to temp (exclude last candle)
+                    self.candle_data[symbol] = deque(temp_candles, maxlen=self.max_history)
+                    # Calculate indicators for second-to-last state
+                    self._calculate_indicators_for_symbol(symbol, suppress_warnings=True)
+                    # Store these as previous indicators
+                    if symbol in self.indicators and self.indicators[symbol]:
+                        self.prev_indicators[symbol] = self.indicators[symbol].copy()
+                        self.logger.debug(f"Initialized prev_indicators for {symbol} with {len(self.prev_indicators[symbol])} indicators")
+                    # Restore full candles
+                    self.candle_data[symbol] = current_candles
+                    # Recalculate with all candles
+                    self._calculate_indicators_for_symbol(symbol, suppress_warnings=True)
+            
+            self.logger.info(f"Bulk updated {len(candles)} bars into {len(self.candle_data[symbol])} {self.timeframe} candles for {symbol}")
     
     def bulk_update_price_data(self, symbol: str, prices: List[tuple]) -> None:
         """
@@ -390,7 +481,7 @@ class IndicatorEngine:
             symbol: Stock symbol
             
         Returns:
-            DataFrame with OHLC data
+            DataFrame with OHLCV data
         """
         candles = list(self.candle_data[symbol])
         
@@ -399,6 +490,7 @@ class IndicatorEngine:
             'high': [c['high'] for c in candles],
             'low': [c['low'] for c in candles],
             'close': [c['close'] for c in candles],
+            'volume': [c.get('volume', 0) for c in candles],  # Include volume
         })
         
         return df
@@ -497,6 +589,49 @@ class IndicatorEngine:
                 except:
                     pass
             
+            # Volume indicators
+            if 'volume' in df.columns and len(df) >= 1:
+                current_volume = float(df['volume'].iloc[-1])
+                indicators['VOLUME'] = current_volume
+                
+                # Debug: Log volume data availability
+                if not suppress_warnings:
+                    non_zero_volumes = (df['volume'] > 0).sum()
+                    self.logger.debug(
+                        f"{symbol} Volume: current={current_volume:.0f}, "
+                        f"non-zero bars={non_zero_volumes}/{len(df)}, "
+                        f"max={df['volume'].max():.0f}"
+                    )
+                
+                # SMA of volume (20-period)
+                if len(df) >= 20:
+                    sma_volume = ta.trend.sma_indicator(df['volume'], window=20)
+                    if sma_volume is not None and not pd.isna(sma_volume.iloc[-1]):
+                        sma_vol_20 = float(sma_volume.iloc[-1])
+                        indicators['SMA_VOLUME_20'] = sma_vol_20
+                        
+                        # Relative Volume (current volume / SMA volume)
+                        if sma_vol_20 > 0:
+                            rel_volume = current_volume / sma_vol_20
+                            indicators['REL_VOLUME_20'] = float(rel_volume)
+                            if not suppress_warnings:
+                                self.logger.debug(f"{symbol} REL_VOLUME_20 = {rel_volume:.2f}")
+                        else:
+                            if not suppress_warnings:
+                                self.logger.warning(f"{symbol} SMA_VOLUME_20 is 0, cannot calculate REL_VOLUME_20")
+                    else:
+                        if not suppress_warnings:
+                            self.logger.warning(f"{symbol} SMA_VOLUME_20 calculation returned None or NaN")
+                else:
+                    if not suppress_warnings:
+                        self.logger.warning(f"{symbol} Not enough data for SMA_VOLUME_20 (need 20, have {len(df)})")
+            else:
+                if not suppress_warnings:
+                    if 'volume' not in df.columns:
+                        self.logger.warning(f"{symbol} Volume column not found in DataFrame")
+                    else:
+                        self.logger.warning(f"{symbol} DataFrame is empty")
+            
             # Calculated metrics
             if 'EMA20' in indicators:
                 ema20 = indicators['EMA20']
@@ -505,11 +640,18 @@ class IndicatorEngine:
                     indicators['PRICE_EMA20_DIFF_PCT'] = float(price_ema20_diff_pct)
             
             # Add previous values with _PREV suffix
-            if symbol in self.prev_indicators:
+            if symbol in self.prev_indicators and self.prev_indicators[symbol]:
                 prev = self.prev_indicators[symbol]
+                # Add _PREV suffix for indicators that should track previous values
+                # Exclude derived/calculated metrics
+                excluded_from_prev = ['PRICE_EMA20_DIFF_PCT', 'PRICE', 'BB_WIDTH']
                 for key, value in prev.items():
-                    if key not in ['PRICE_EMA20_DIFF_PCT']:
+                    if key not in excluded_from_prev and not key.endswith('_PREV'):
                         indicators[f'{key}_PREV'] = value
+            else:
+                # Log if prev_indicators is empty for debugging
+                if not suppress_warnings:
+                    self.logger.debug(f"No previous indicators available for {symbol} yet")
         
         except Exception as e:
             if not suppress_warnings:

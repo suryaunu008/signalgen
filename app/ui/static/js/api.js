@@ -185,6 +185,15 @@ class ApiClient {
   async setSetting(key, value) {
     return this.put(`/api/settings/${key}`, { value });
   }
+
+  // Timeframe API
+  async getAvailableTimeframes() {
+    return this.get("/api/timeframes");
+  }
+
+  async changeTimeframe(timeframe) {
+    return this.put("/api/timeframe", { value: timeframe });
+  }
 }
 
 // Create global API client instance

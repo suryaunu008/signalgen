@@ -26,7 +26,10 @@ MVP Limitations:
 """
 
 import json
+import logging
 from typing import Dict, Any, List, Union
+
+logger = logging.getLogger(__name__)
 
 class RuleValidationError(Exception):
     """Exception raised when rule validation fails."""
@@ -53,21 +56,26 @@ class RuleEngine:
         
         # Moving Averages (Simple MA)
         "MA20", "MA50", "MA100", "MA200",  # 20, 50, 100, 200 period Simple Moving Averages
+        "MA20_PREV", "MA50_PREV", "MA100_PREV", "MA200_PREV",  # Previous MA values
         
         # Exponential Moving Averages
         "EMA6", "EMA9", "EMA10", "EMA13", "EMA20", "EMA21", "EMA34", "EMA50",  # EMA periods
+        "EMA6_PREV", "EMA9_PREV", "EMA10_PREV", "EMA13_PREV", "EMA20_PREV", "EMA21_PREV", "EMA34_PREV", "EMA50_PREV",  # Previous EMA values
         
         # MACD (Moving Average Convergence Divergence)
         "MACD",                    # MACD line (fast EMA - slow EMA)
         "MACD_SIGNAL",             # MACD signal line
         "MACD_HIST",               # MACD histogram current value
         "MACD_HIST_PREV",          # MACD histogram previous value
+        "MACD_PREV",               # Previous MACD line
+        "MACD_SIGNAL_PREV",        # Previous MACD signal line
         
         # Bollinger Bands
         "BB_UPPER",                # Bollinger Bands upper band
         "BB_MIDDLE",               # Bollinger Bands middle band (SMA)
         "BB_LOWER",                # Bollinger Bands lower band
         "BB_WIDTH",                # Bollinger Bands width (upper - lower)
+        "BB_UPPER_PREV", "BB_MIDDLE_PREV", "BB_LOWER_PREV",  # Previous BB values
         
         # ADX (Average Directional Index) - Trend strength
         "ADX5",                    # ADX 5 period current value
@@ -76,6 +84,11 @@ class RuleEngine:
         # RSI (Relative Strength Index) - Momentum oscillator
         "RSI14",                   # RSI 14 period current value
         "RSI14_PREV",              # RSI 14 period previous value
+        
+        # Volume indicators
+        "VOLUME",                  # Current bar volume
+        "SMA_VOLUME_20",           # 20-period SMA of volume
+        "REL_VOLUME_20",           # Relative volume (VOLUME / SMA_VOLUME_20)
         
         # Calculated metrics
         "PRICE_EMA20_DIFF_PCT",    # Percentage difference between PRICE and EMA20
@@ -187,12 +200,13 @@ class RuleEngine:
             left_value = self._get_operand_value(left_operand, indicator_values)
             right_value = self._get_operand_value(right_operand, indicator_values)
             
-            # Apply operator
-            operator_func = self.operators.get(operator)
-            if not operator_func:
-                raise RuleEvaluationError(f"Operator not implemented: {operator}")
+            # Log condition evaluation for debugging
+            result = self.operators.get(operator)(left_value, right_value)
+            logger.debug(
+                f"Condition: {left_operand}({left_value:.4f}) {operator} {right_operand}({right_value:.4f}) = {result}"
+            )
             
-            return operator_func(left_value, right_value)
+            return result
             
         except (RuleEvaluationError, KeyError, TypeError) as e:
             raise RuleEvaluationError(f"Failed to evaluate condition: {str(e)}")
