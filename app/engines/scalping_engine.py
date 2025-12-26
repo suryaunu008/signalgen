@@ -719,7 +719,9 @@ class ScalpingEngine:
                     
                     if rule_result:
                         # Generate signal with indicator values for debugging
-                        self._generate_signal(symbol, bar_data.close, timestamp, indicators)
+                        # Use indicators['PRICE'] for consistency with rule evaluation
+                        signal_price = indicators.get('PRICE', bar_data.close)
+                        self._generate_signal(symbol, signal_price, timestamp, indicators)
                         
                 except Exception as e:
                     self.logger.error(f"Error evaluating rule for {symbol}: {e}")
