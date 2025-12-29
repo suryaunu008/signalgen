@@ -617,8 +617,10 @@ class IndicatorEngine:
                             if not suppress_warnings:
                                 self.logger.debug(f"{symbol} REL_VOLUME_20 = {rel_volume:.2f}")
                         else:
+                            # Set default REL_VOLUME_20 to 1.0 if SMA is 0 (low/no volume stock)
+                            indicators['REL_VOLUME_20'] = 1.0
                             if not suppress_warnings:
-                                self.logger.warning(f"{symbol} SMA_VOLUME_20 is 0, cannot calculate REL_VOLUME_20")
+                                self.logger.debug(f"{symbol} SMA_VOLUME_20 is 0, using default REL_VOLUME_20 = 1.0")
                     else:
                         if not suppress_warnings:
                             self.logger.warning(f"{symbol} SMA_VOLUME_20 calculation returned None or NaN")

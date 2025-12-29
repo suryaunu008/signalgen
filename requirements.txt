@@ -17,6 +17,9 @@ pandas>=2.0.0
 numpy>=1.26.0
 ta>=0.11.0
 
+# Market Data Sources
+yfinance>=0.2.33
+
 # Database
 # sqlite3 is built-in with Python
 

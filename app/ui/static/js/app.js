@@ -5,6 +5,42 @@
  * and manages the application state. It serves as the main controller for the frontend.
  */
 
+// Global tab switching function
+function switchTab(tabName) {
+  console.log(`Switching to tab: ${tabName}`);
+  
+  // Hide all tab contents
+  const tabContents = document.querySelectorAll('.tab-content');
+  tabContents.forEach(content => {
+    content.classList.remove('active');
+  });
+  
+  // Remove active class from all tab buttons
+  const tabButtons = document.querySelectorAll('.tab-button');
+  tabButtons.forEach(button => {
+    button.classList.remove('active');
+  });
+  
+  // Show selected tab content
+  const selectedContent = document.getElementById(`tab-content-${tabName}`);
+  if (selectedContent) {
+    selectedContent.classList.add('active');
+  }
+  
+  // Add active class to selected tab button
+  const selectedButton = document.getElementById(`tab-btn-${tabName}`);
+  if (selectedButton) {
+    selectedButton.classList.add('active');
+  }
+  
+  // Initialize tab-specific UI if needed
+  if (tabName === 'backtesting' && typeof backtestingUI !== 'undefined') {
+    backtestingUI.init();
+  } else if (tabName === 'swing' && typeof swingTradingUI !== 'undefined') {
+    swingTradingUI.init();
+  }
+}
+
 class SignalGenApp {
   constructor() {
     this.engineRunning = false;
@@ -343,6 +379,11 @@ class SignalGenApp {
 
     const wasRunning = this.engineRunning;
     this.engineRunning = status.is_running;
+
+    // Check for error message in status
+    if (status.error) {
+      this.showToast(status.error, "error");
+    }
 
     // Update engine status indicator
     const engineStatus = document.getElementById("engine-status");
@@ -950,6 +991,7 @@ class SignalGenApp {
         name,
         definition: {
           logic,
+          signal_type: document.getElementById("rule-signal-type").value,
           conditions,
           cooldown_sec: cooldown,
         },
@@ -983,6 +1025,7 @@ class SignalGenApp {
   clearRuleForm() {
     document.getElementById("rule-name").value = "";
     document.getElementById("rule-logic").value = "AND";
+    document.getElementById("rule-signal-type").value = "BUY";
     document.getElementById("rule-cooldown").value = "60";
 
     // Clean up all existing condition rows before clearing

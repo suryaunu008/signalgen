@@ -142,6 +142,40 @@ class SettingsUpdate(BaseModel):
     """Model for updating settings."""
     value: Any
 
+class BacktestRequest(BaseModel):
+    """Model for backtest request."""
+    name: str = Field(..., min_length=1, max_length=100)
+    mode: str = Field(..., pattern='^(scalping|swing)$')
+    rule_id: int = Field(..., gt=0)
+    symbols: List[str] = Field(..., min_items=1, max_items=50)
+    timeframe: str = Field(...)
+    start_date: str = Field(...)  # ISO format date string
+    end_date: str = Field(...)    # ISO format date string
+    data_source: str = Field(..., pattern='^(ibkr|yahoo)$')
+
+class SwingScreenRequest(BaseModel):
+    """Model for swing screening request."""
+    rule_id: int = Field(..., gt=0)
+    ticker_universe_id: int = Field(..., gt=0)
+    timeframe: str = Field(default='1d')
+    lookback_days: int = Field(default=30, ge=1, le=365)
+
+class UniverseCreate(BaseModel):
+    """Model for creating ticker universe."""
+    name: str = Field(..., min_length=1, max_length=100)
+    tickers: List[str] = Field(..., min_items=0, max_items=200)
+    description: Optional[str] = Field(None, max_length=500)
+
+class UniverseUpdate(BaseModel):
+    """Model for updating ticker universe."""
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    tickers: Optional[List[str]] = Field(None, min_items=0, max_items=200)
+    description: Optional[str] = Field(None, max_length=500)
+
+class ModeChange(BaseModel):
+    """Model for changing operational mode."""
+    mode: str = Field(..., pattern='^(scalping|backtesting|swing|swing_backtest)$')
+
 class SignalGenApp:
     """
     Main FastAPI application for SignalGen system.
@@ -902,6 +936,357 @@ class SignalGenApp:
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Internal server error"
                 )
+        
+        # ============================================================
+        # BACKTESTING API ENDPOINTS
+        # ============================================================
+        
+        @self.app.post("/api/backtest/run")
+        async def run_backtest(request: BacktestRequest):
+            """
+            Run a backtest with historical data.
+            
+            Request body:
+                name: Backtest run name
+                mode: 'scalping' or 'swing'
+                rule_id: Rule ID to test
+                symbols: List of symbols
+                timeframe: Candle timeframe
+                start_date: ISO date string
+                end_date: ISO date string
+                data_source: 'ibkr' or 'yahoo'
+            """
+            try:
+                from datetime import datetime
+                from .engines.backtesting_engine import BacktestingEngine
+                from .data_sources import IBKRDataSource, YahooDataSource
+                
+                # Parse dates
+                start_date = datetime.fromisoformat(request.start_date.replace('Z', '+00:00'))
+                end_date = datetime.fromisoformat(request.end_date.replace('Z', '+00:00'))
+                
+                # Create data source
+                if request.data_source == 'ibkr':
+                    data_source = IBKRDataSource()
+                else:
+                    data_source = YahooDataSource()
+                
+                # Create engine
+                engine = BacktestingEngine(
+                    data_source=data_source,
+                    timeframe=request.timeframe
+                )
+                
+                # Run backtest
+                self.logger.info(f"Starting backtest: {request.name}")
+                results = await engine.run_backtest(
+                    name=request.name,
+                    mode=request.mode,
+                    symbols=request.symbols,
+                    rule_id=request.rule_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                    data_source_name=request.data_source
+                )
+                
+                return {
+                    "message": "Backtest completed successfully",
+                    "backtest_run_id": results['backtest_run_id'],
+                    "total_signals": results['metrics']['total_signals'],
+                    "metrics": results['metrics']
+                }
+                
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(e)
+                )
+            except Exception as e:
+                self.logger.error(f"Backtest error: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Backtest failed: {str(e)}"
+                )
+        
+        @self.app.get("/api/backtest/runs")
+        def get_backtest_runs():
+            """Get all backtest runs."""
+            try:
+                runs = self.repository.get_all_backtest_runs()
+                return {"runs": runs}
+            except Exception as e:
+                self.logger.error(f"Error getting backtest runs: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error"
+                )
+        
+        @self.app.get("/api/backtest/runs/{run_id}")
+        def get_backtest_run(run_id: int):
+            """Get specific backtest run with signals."""
+            try:
+                run = self.repository.get_backtest_run(run_id)
+                if not run:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Backtest run {run_id} not found"
+                    )
+                
+                signals = self.repository.get_backtest_signals(run_id)
+                run['signals'] = signals
+                
+                return run
+            except HTTPException:
+                raise
+            except Exception as e:
+                self.logger.error(f"Error getting backtest run {run_id}: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error"
+                )
+        
+        @self.app.delete("/api/backtest/runs/{run_id}")
+        def delete_backtest_run(run_id: int):
+            """Delete a backtest run."""
+            try:
+                success = self.repository.delete_backtest_run(run_id)
+                if not success:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Backtest run {run_id} not found"
+                    )
+                
+                return {"message": "Backtest run deleted successfully"}
+            except HTTPException:
+                raise
+            except Exception as e:
+                self.logger.error(f"Error deleting backtest run {run_id}: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error"
+                )
+        
+        # ============================================================
+        # SWING TRADING API ENDPOINTS
+        # ============================================================
+        
+        @self.app.post("/api/swing/screen")
+        async def screen_swing_signals(request: SwingScreenRequest):
+            """
+            Run swing trading screening on a ticker universe.
+            
+            Request body:
+                rule_id: Rule ID to use
+                ticker_universe_id: Ticker universe ID
+                timeframe: Candle timeframe (default: '1d')
+                lookback_days: Days of historical data (default: 30)
+            """
+            try:
+                from .engines.swing_screening_engine import SwingScreeningEngine
+                
+                # Create screening engine
+                engine = SwingScreeningEngine(timeframe=request.timeframe)
+                
+                # Run screening
+                self.logger.info(f"Starting swing screening on universe {request.ticker_universe_id}")
+                results = await engine.screen_universe(
+                    universe_id=request.ticker_universe_id,
+                    rule_id=request.rule_id,
+                    lookback_days=request.lookback_days
+                )
+                
+                # Filter out errors for summary
+                successful = [r for r in results if r['status'] == 'success']
+                signals_found = [r for r in successful if r['signal'] is not None]
+                
+                return {
+                    "message": "Screening completed successfully",
+                    "results": results,
+                    "summary": {
+                        "total_tickers": len(results),
+                        "successful": len(successful),
+                        "signals_found": len(signals_found),
+                        "errors": len(results) - len(successful)
+                    }
+                }
+                
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(e)
+                )
+            except Exception as e:
+                self.logger.error(f"Screening error: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Screening failed: {str(e)}"
+                )
+        
+        @self.app.get("/api/swing/universes")
+        def get_ticker_universes():
+            """Get all ticker universes."""
+            try:
+                universes = self.repository.get_all_ticker_universes()
+                return {"universes": universes}
+            except Exception as e:
+                self.logger.error(f"Error getting ticker universes: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error"
+                )
+        
+        @self.app.get("/api/swing/universes/{universe_id}")
+        def get_ticker_universe(universe_id: int):
+            """Get specific ticker universe."""
+            try:
+                universe = self.repository.get_ticker_universe(universe_id)
+                if not universe:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Ticker universe {universe_id} not found"
+                    )
+                return universe
+            except HTTPException:
+                raise
+            except Exception as e:
+                self.logger.error(f"Error getting ticker universe {universe_id}: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error"
+                )
+        
+        @self.app.post("/api/swing/universes")
+        def create_ticker_universe(request: UniverseCreate):
+            """Create new ticker universe."""
+            try:
+                universe_id = self.repository.create_ticker_universe(
+                    name=request.name,
+                    tickers=request.tickers,
+                    description=request.description
+                )
+                
+                return {
+                    "message": "Ticker universe created successfully",
+                    "universe_id": universe_id
+                }
+            except Exception as e:
+                self.logger.error(f"Error creating ticker universe: {e}")
+                if "UNIQUE constraint failed" in str(e):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Universe with name '{request.name}' already exists"
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error"
+                )
+        
+        @self.app.put("/api/swing/universes/{universe_id}")
+        def update_ticker_universe(universe_id: int, request: UniverseUpdate):
+            """Update ticker universe."""
+            try:
+                success = self.repository.update_ticker_universe(
+                    universe_id=universe_id,
+                    name=request.name,
+                    tickers=request.tickers,
+                    description=request.description
+                )
+                
+                if not success:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Ticker universe {universe_id} not found"
+                    )
+                
+                return {"message": "Ticker universe updated successfully"}
+            except HTTPException:
+                raise
+            except Exception as e:
+                self.logger.error(f"Error updating ticker universe {universe_id}: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error"
+                )
+        
+        @self.app.delete("/api/swing/universes/{universe_id}")
+        def delete_ticker_universe(universe_id: int):
+            """Delete ticker universe."""
+            try:
+                success = self.repository.delete_ticker_universe(universe_id)
+                if not success:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Ticker universe {universe_id} not found"
+                    )
+                
+                return {"message": "Ticker universe deleted successfully"}
+            except HTTPException:
+                raise
+            except Exception as e:
+                self.logger.error(f"Error deleting ticker universe {universe_id}: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error"
+                )
+        
+        # ============================================================
+        # MODE MANAGEMENT API ENDPOINTS
+        # ============================================================
+        
+        @self.app.get("/api/mode")
+        def get_current_mode():
+            """Get current operational mode."""
+            try:
+                # For MVP, mode is determined by engine state
+                # In future, this could be stored in settings
+                mode = "scalping"  # Default mode
+                if not self.scalping_engine.is_running:
+                    mode = "idle"
+                
+                return {
+                    "mode": mode,
+                    "available_modes": ["scalping", "backtesting", "swing", "swing_backtest"],
+                    "engine_running": self.scalping_engine.is_running
+                }
+            except Exception as e:
+                self.logger.error(f"Error getting mode: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error"
+                )
+        
+        @self.app.put("/api/mode")
+        def set_mode(request: ModeChange):
+            """
+            Change operational mode.
+            
+            Note: Mode changes are currently UI-driven.
+            Real-time scalping uses ScalpingEngine.
+            Backtesting and swing use their respective engines on-demand.
+            """
+            try:
+                # Validate that engine is not running
+                if self.scalping_engine.is_running:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Cannot change mode while scalping engine is running. Stop the engine first."
+                    )
+                
+                # Store mode preference in settings (for future use)
+                self.repository.set_setting('operational_mode', request.mode)
+                
+                return {
+                    "message": f"Mode changed to {request.mode}",
+                    "mode": request.mode
+                }
+            except HTTPException:
+                raise
+            except Exception as e:
+                self.logger.error(f"Error setting mode: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error"
+                )
     
     def _start_engine_in_thread(self, symbols: List[str], rule_id: int) -> None:
         """
@@ -1001,6 +1386,31 @@ class SignalGenApp:
                 with self._engine_lock:
                     self._engine_running = False
                     self._engine_start_time = None
+                
+                # Broadcast error status to UI
+                try:
+                    error_status = {
+                        'is_running': False,
+                        'is_connected': False,
+                        'ibkr_connected': False,
+                        'state': {'state': 'stopped'},
+                        'active_watchlist': [],
+                        'active_rule': None,
+                        'subscribed_symbols': [],
+                        'reconnect_enabled': False,
+                        'reconnect_attempts': 0,
+                        'connection_details': {},
+                        'error': 'Failed to connect to IBKR. Please ensure TWS or IB Gateway is running.'
+                    }
+                    self.broadcaster.broadcast_engine_status_sync(error_status)
+                    self.logger.info("Broadcasted error status to UI")
+                except Exception as e:
+                    self.logger.error(f"Error broadcasting error status: {e}")
+                
+                # Stop the event loop so the thread can exit
+                if self._engine_loop and self._engine_loop.is_running():
+                    self._engine_loop.call_soon_threadsafe(self._engine_loop.stop)
+                    self.logger.info("Stopped event loop after engine start failure")
                     
         except Exception as e:
             with self._engine_lock:
@@ -1009,12 +1419,27 @@ class SignalGenApp:
                 
             self.logger.error(f"Error starting engine: {e}")
             try:
-                await self.broadcaster.broadcast_error({
-                    'type': 'engine_start_error',
-                    'message': str(e)
-                })
+                error_status = {
+                    'is_running': False,
+                    'is_connected': False,
+                    'ibkr_connected': False,
+                    'state': {'state': 'stopped'},
+                    'active_watchlist': [],
+                    'active_rule': None,
+                    'subscribed_symbols': [],
+                    'reconnect_enabled': False,
+                    'reconnect_attempts': 0,
+                    'connection_details': {},
+                    'error': str(e)
+                }
+                self.broadcaster.broadcast_engine_status_sync(error_status)
             except Exception:
                 pass  # Ignore broadcast errors
+            
+            # Stop the event loop so the thread can exit
+            if self._engine_loop and self._engine_loop.is_running():
+                self._engine_loop.call_soon_threadsafe(self._engine_loop.stop)
+                self.logger.info("Stopped event loop after exception")
     
     async def _broadcast_engine_status_after_start(self) -> None:
         """Background task to broadcast engine status after startup delay."""

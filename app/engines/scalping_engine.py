@@ -776,9 +776,15 @@ class ScalpingEngine:
             indicators: Current indicator values at signal generation
         """
         try:
+            # Get signal type from rule definition (default to 'BUY' if not specified)
+            signal_type = self.active_rule.get('signal_type', 'BUY')
+            if 'definition' in self.active_rule and isinstance(self.active_rule['definition'], dict):
+                signal_type = self.active_rule['definition'].get('signal_type', signal_type)
+            
             # Create signal data with indicator values for debugging
             signal_data = {
                 'symbol': symbol,
+                'signal_type': signal_type,
                 'price': price,
                 'rule_id': self.active_rule['id'],
                 'timestamp': datetime.fromtimestamp(timestamp).isoformat(),

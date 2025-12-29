@@ -131,6 +131,56 @@ class SQLiteRepository:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_watchlist_items_watchlist_id ON watchlist_items(watchlist_id)')
             
+            # Create backtest_runs table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS backtest_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    mode TEXT CHECK(mode IN ('scalping', 'swing')) NOT NULL,
+                    rule_id INTEGER NOT NULL,
+                    symbols TEXT NOT NULL,
+                    timeframe TEXT NOT NULL,
+                    start_date TEXT NOT NULL,
+                    end_date TEXT NOT NULL,
+                    data_source TEXT CHECK(data_source IN ('ibkr', 'yahoo')) NOT NULL,
+                    created_at TEXT NOT NULL,
+                    total_signals INTEGER DEFAULT 0,
+                    metadata TEXT,
+                    FOREIGN KEY (rule_id) REFERENCES rules(id) ON DELETE CASCADE
+                )
+            ''')
+            
+            # Create backtest_signals table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS backtest_signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    backtest_run_id INTEGER NOT NULL,
+                    symbol TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    signal_type TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    indicators TEXT,
+                    FOREIGN KEY (backtest_run_id) REFERENCES backtest_runs(id) ON DELETE CASCADE
+                )
+            ''')
+            
+            # Create ticker_universes table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ticker_universes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    tickers TEXT NOT NULL,
+                    description TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            ''')
+            
+            # Create indexes for backtesting tables
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_backtest_runs_created_at ON backtest_runs(created_at)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_backtest_signals_timestamp ON backtest_signals(timestamp)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_backtest_signals_run_id ON backtest_signals(backtest_run_id)')
+            
             conn.commit()
             self.logger.info("Database initialized successfully")
     
@@ -765,4 +815,329 @@ class SQLiteRepository:
             cursor.execute('SELECT COUNT(*) FROM settings')
             stats['total_settings'] = cursor.fetchone()[0]
             
+            # Count backtest runs
+            cursor.execute('SELECT COUNT(*) FROM backtest_runs')
+            stats['total_backtest_runs'] = cursor.fetchone()[0]
+            
+            # Count backtest signals
+            cursor.execute('SELECT COUNT(*) FROM backtest_signals')
+            stats['total_backtest_signals'] = cursor.fetchone()[0]
+            
+            # Count ticker universes
+            cursor.execute('SELECT COUNT(*) FROM ticker_universes')
+            stats['total_ticker_universes'] = cursor.fetchone()[0]
+            
             return stats
+    
+    # Backtesting operations
+    def create_backtest_run(
+        self,
+        name: str,
+        mode: str,
+        rule_id: int,
+        symbols: List[str],
+        timeframe: str,
+        start_date: datetime,
+        end_date: datetime,
+        data_source: str,
+        total_signals: int = 0,
+        metadata: Optional[Dict] = None
+    ) -> int:
+        """
+        Create a new backtest run.
+        
+        Args:
+            name: Backtest run name
+            mode: 'scalping' or 'swing'
+            rule_id: Rule ID used
+            symbols: List of symbols tested
+            timeframe: Timeframe used
+            start_date: Start date
+            end_date: End date
+            data_source: 'ibkr' or 'yahoo'
+            total_signals: Total signals generated
+            metadata: Additional metrics as dictionary
+        
+        Returns:
+            int: ID of created backtest run
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO backtest_runs 
+                (name, mode, rule_id, symbols, timeframe, start_date, end_date, 
+                 data_source, created_at, total_signals, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                name,
+                mode,
+                rule_id,
+                json.dumps(symbols),
+                timeframe,
+                start_date.isoformat(),
+                end_date.isoformat(),
+                data_source,
+                datetime.now().isoformat(),
+                total_signals,
+                json.dumps(metadata) if metadata else None
+            ))
+            conn.commit()
+            return cursor.lastrowid
+    
+    def create_backtest_signals(self, backtest_run_id: int, signals: List[Dict]) -> None:
+        """
+        Create backtest signals in batch.
+        
+        Args:
+            backtest_run_id: Backtest run ID
+            signals: List of signal dictionaries
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            for signal in signals:
+                cursor.execute('''
+                    INSERT INTO backtest_signals 
+                    (backtest_run_id, symbol, timestamp, signal_type, price, indicators)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (
+                    backtest_run_id,
+                    signal['symbol'],
+                    signal['timestamp'].isoformat(),
+                    signal['signal_type'],
+                    signal['price'],
+                    json.dumps(signal.get('indicators'))
+                ))
+            conn.commit()
+    
+    def get_backtest_run(self, run_id: int) -> Optional[Dict]:
+        """
+        Get backtest run by ID.
+        
+        Args:
+            run_id: Backtest run ID
+        
+        Returns:
+            Optional[Dict]: Backtest run data or None
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM backtest_runs WHERE id = ?', (run_id,))
+            row = cursor.fetchone()
+            
+            if row:
+                run = dict(row)
+                run['symbols'] = json.loads(run['symbols'])
+                run['metadata'] = json.loads(run['metadata']) if run['metadata'] else {}
+                return run
+            return None
+    
+    def get_all_backtest_runs(self) -> List[Dict]:
+        """
+        Get all backtest runs.
+        
+        Returns:
+            List[Dict]: List of all backtest runs
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM backtest_runs ORDER BY created_at DESC')
+            rows = cursor.fetchall()
+            
+            runs = []
+            for row in rows:
+                run = dict(row)
+                run['symbols'] = json.loads(run['symbols'])
+                run['metadata'] = json.loads(run['metadata']) if run['metadata'] else {}
+                runs.append(run)
+            
+            return runs
+    
+    def get_backtest_signals(self, run_id: int) -> List[Dict]:
+        """
+        Get all signals for a backtest run.
+        
+        Args:
+            run_id: Backtest run ID
+        
+        Returns:
+            List[Dict]: List of signals
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT * FROM backtest_signals 
+                WHERE backtest_run_id = ? 
+                ORDER BY timestamp
+            ''', (run_id,))
+            rows = cursor.fetchall()
+            
+            signals = []
+            for row in rows:
+                signal = dict(row)
+                signal['indicators'] = json.loads(signal['indicators']) if signal['indicators'] else {}
+                signals.append(signal)
+            
+            return signals
+    
+    def delete_backtest_run(self, run_id: int) -> bool:
+        """
+        Delete a backtest run and its signals.
+        
+        Args:
+            run_id: Backtest run ID
+        
+        Returns:
+            bool: True if deletion successful
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM backtest_runs WHERE id = ?', (run_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    # Ticker Universe operations
+    def create_ticker_universe(
+        self,
+        name: str,
+        tickers: List[str],
+        description: Optional[str] = None
+    ) -> int:
+        """
+        Create a new ticker universe.
+        
+        Args:
+            name: Universe name
+            tickers: List of ticker symbols
+            description: Optional description
+        
+        Returns:
+            int: ID of created universe
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            now = datetime.now().isoformat()
+            cursor.execute('''
+                INSERT INTO ticker_universes (name, tickers, description, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (name, json.dumps(tickers), description, now, now))
+            conn.commit()
+            return cursor.lastrowid
+    
+    def get_ticker_universe(self, universe_id: int) -> Optional[Dict]:
+        """
+        Get ticker universe by ID.
+        
+        Args:
+            universe_id: Universe ID
+        
+        Returns:
+            Optional[Dict]: Universe data or None
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM ticker_universes WHERE id = ?', (universe_id,))
+            row = cursor.fetchone()
+            
+            if row:
+                universe = dict(row)
+                universe['tickers'] = json.loads(universe['tickers'])
+                return universe
+            return None
+    
+    def get_all_ticker_universes(self) -> List[Dict]:
+        """
+        Get all ticker universes.
+        
+        Returns:
+            List[Dict]: List of all universes
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM ticker_universes ORDER BY name')
+            rows = cursor.fetchall()
+            
+            universes = []
+            for row in rows:
+                universe = dict(row)
+                universe['tickers'] = json.loads(universe['tickers'])
+                universes.append(universe)
+            
+            return universes
+    
+    def update_ticker_universe(
+        self,
+        universe_id: int,
+        name: Optional[str] = None,
+        tickers: Optional[List[str]] = None,
+        description: Optional[str] = None
+    ) -> bool:
+        """
+        Update ticker universe.
+        
+        Args:
+            universe_id: Universe ID
+            name: New name (optional)
+            tickers: New tickers list (optional)
+            description: New description (optional)
+        
+        Returns:
+            bool: True if update successful
+        """
+        updates = []
+        params = []
+        
+        if name is not None:
+            updates.append("name = ?")
+            params.append(name)
+        
+        if tickers is not None:
+            updates.append("tickers = ?")
+            params.append(json.dumps(tickers))
+        
+        if description is not None:
+            updates.append("description = ?")
+            params.append(description)
+        
+        if not updates:
+            return False
+        
+        updates.append("updated_at = ?")
+        params.append(datetime.now().isoformat())
+        params.append(universe_id)
+        
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f'''
+                UPDATE ticker_universes SET {', '.join(updates)}
+                WHERE id = ?
+            ''', params)
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    def delete_ticker_universe(self, universe_id: int) -> bool:
+        """
+        Delete a ticker universe.
+        
+        Args:
+            universe_id: Universe ID
+        
+        Returns:
+            bool: True if deletion successful
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM ticker_universes WHERE id = ?', (universe_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    def get_rule_by_id(self, rule_id: int) -> Optional[Dict]:
+        """
+        Get rule by ID (alias for get_rule for consistency).
+        
+        Args:
+            rule_id: Rule ID
+        
+        Returns:
+            Optional[Dict]: Rule data or None
+        """
+        return self.get_rule(rule_id)

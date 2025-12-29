@@ -52,6 +52,9 @@ def initialize_database(db_path: str = 'signalgen.db') -> None:
         # Create default watchlist if none exists
         _create_default_watchlist(repo)
         
+        # Seed ticker universes if none exist
+        _seed_ticker_universes(repo)
+        
         logger.info("Database initialization completed successfully")
         
     except Exception as e:
@@ -78,6 +81,7 @@ def _seed_default_rule(repo: SQLiteRepository) -> None:
         "name": "Default Scalping",
         "type": "system",
         "logic": "AND",
+        "signal_type": "BUY",
         "conditions": [
             # EMA 6/10 Crossover
             {"left": "EMA6", "op": "CROSS_UP", "right": "EMA10"},
@@ -163,6 +167,52 @@ def _create_default_watchlist(repo: SQLiteRepository) -> None:
     repo.set_active_watchlist(watchlist_id)
     
     logger.info(f"Created default watchlist with ID: {watchlist_id}")
+
+def _seed_ticker_universes(repo: SQLiteRepository) -> None:
+    """
+    Seed default ticker universes for swing trading.
+    
+    Args:
+        repo: SQLiteRepository instance
+    """
+    existing_universes = repo.get_all_ticker_universes()
+    if existing_universes:
+        logger.info("Ticker universes already exist, skipping seeding")
+        return
+    
+    # Tech Giants
+    repo.create_ticker_universe(
+        name="Tech Giants",
+        tickers=["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA"],
+        description="Major technology stocks"
+    )
+    
+    # S&P 100 Top Holdings
+    repo.create_ticker_universe(
+        name="S&P 100 Top 20",
+        tickers=[
+            "AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA", "BRK.B",
+            "LLY", "AVGO", "JPM", "WMT", "V", "UNH", "XOM", "ORCL", "MA", "HD",
+            "PG", "COST"
+        ],
+        description="Top 20 holdings in S&P 100 index"
+    )
+    
+    # Popular Trading Stocks
+    repo.create_ticker_universe(
+        name="Popular Traders",
+        tickers=["SPY", "QQQ", "TSLA", "AAPL", "NVDA", "AMD", "AMZN", "MSFT", "META", "GOOGL"],
+        description="Most actively traded stocks and ETFs"
+    )
+    
+    # Custom (empty for user to fill)
+    repo.create_ticker_universe(
+        name="Custom",
+        tickers=[],
+        description="User-defined ticker universe"
+    )
+    
+    logger.info("Seeded default ticker universes")
 
 if __name__ == "__main__":
     # Configure logging

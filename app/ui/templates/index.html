@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SignalGen - Real-time Scalping Signal Generator</title>
+    <title>SignalGen - Multi-Mode Trading System</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
     <link
@@ -13,6 +13,8 @@
     <script src="/static/js/app.js"></script>
     <script src="/static/js/websocket.js"></script>
     <script src="/static/js/api.js"></script>
+    <script src="/static/js/backtesting.js"></script>
+    <script src="/static/js/swing.js"></script>
     <style>
       /* Price table animations */
       .price-flash {
@@ -47,6 +49,24 @@
         font-size: 0.875em;
         opacity: 0.8;
       }
+
+      /* Tab styles */
+      .tab-button {
+        transition: all 0.3s ease;
+      }
+
+      .tab-button.active {
+        background-color: #3b82f6;
+        color: white;
+      }
+
+      .tab-content {
+        display: none;
+      }
+
+      .tab-content.active {
+        display: block;
+      }
     </style>
   </head>
   <body class="bg-gray-100 text-gray-800">
@@ -72,9 +92,42 @@
       </div>
     </header>
 
+    <!-- Tab Navigation -->
+    <nav class="bg-white shadow-sm border-b border-gray-200">
+      <div class="container mx-auto px-4">
+        <div class="flex space-x-1">
+          <button
+            onclick="switchTab('scalping')"
+            id="tab-btn-scalping"
+            class="tab-button px-6 py-3 text-sm font-medium text-gray-700 hover:text-blue-600 hover:bg-gray-50 border-b-2 border-transparent active"
+          >
+            <i class="fas fa-bolt mr-2"></i>
+            Real-time Scalping
+          </button>
+          <button
+            onclick="switchTab('backtesting')"
+            id="tab-btn-backtesting"
+            class="tab-button px-6 py-3 text-sm font-medium text-gray-700 hover:text-blue-600 hover:bg-gray-50 border-b-2 border-transparent"
+          >
+            <i class="fas fa-history mr-2"></i>
+            Backtesting
+          </button>
+          <button
+            onclick="switchTab('swing')"
+            id="tab-btn-swing"
+            class="tab-button px-6 py-3 text-sm font-medium text-gray-700 hover:text-blue-600 hover:bg-gray-50 border-b-2 border-transparent"
+          >
+            <i class="fas fa-chart-line mr-2"></i>
+            Swing Trading
+          </button>
+        </div>
+      </div>
+    </nav>
+
     <!-- Main Content -->
-    <main class="container mx-auto px-4 py-6">
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <main class="container mx-auto px-4 py-6"      
+      <!-- TAB: Real-time Scalping -->
+      <div id="tab-content-scalping" class="tab-content active">      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <!-- Left Column -->
         <div class="lg:col-span-2 space-y-6">
           <!-- Engine Control Panel -->
@@ -204,6 +257,22 @@
                   <option value="AND">AND</option>
                   <option value="OR">OR</option>
                 </select>
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2"
+                  >Signal Type</label
+                >
+                <select
+                  id="rule-signal-type"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="BUY">BUY</option>
+                  <option value="SELL">SELL</option>
+                </select>
+                <p class="text-xs text-gray-500 mt-1">
+                  <i class="fas fa-info-circle"></i> Signal type generated when rule conditions are met
+                </p>
               </div>
 
               <div>
@@ -499,6 +568,281 @@
           </section>
         </div>
       </div>
+      </div>
+      <!-- END TAB: Real-time Scalping -->
+
+      <!-- TAB: Backtesting -->
+      <div id="tab-content-backtesting" class="tab-content">
+        <div class="space-y-6">
+          
+          <!-- Backtest Configuration -->
+          <section class="bg-white rounded-lg shadow-md p-6">
+            <h2 class="text-xl font-semibold mb-4 flex items-center">
+              <i class="fas fa-history mr-2 text-blue-600"></i>
+              Backtest Configuration
+            </h2>
+            
+            <div id="backtest-message"></div>
+            <div id="backtest-loading" class="hidden mb-4"></div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">Backtest Name</label>
+                <input
+                  type="text"
+                  id="backtest-name"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="My Backtest 1"
+                />
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">Mode</label>
+                <select
+                  id="backtest-mode"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="scalping">Scalping</option>
+                  <option value="swing">Swing Trading</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">Rule</label>
+                <select
+                  id="backtest-rule-select"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">Select rule...</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">Timeframe</label>
+                <select
+                  id="backtest-timeframe"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="1m">1 Minute</option>
+                  <option value="5m" selected>5 Minutes</option>
+                  <option value="15m">15 Minutes</option>
+                  <option value="1h">1 Hour</option>
+                  <option value="4h">4 Hours</option>
+                  <option value="1d">1 Day</option>
+                </select>
+                <p id="timeframe-recommendation" class="text-xs text-gray-500 mt-1">Recommended: 1m, 5m for scalping</p>
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">Data Source</label>
+                <select
+                  id="backtest-data-source"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="yahoo">Yahoo Finance (Free)</option>
+                  <option value="ibkr">IBKR (Requires Connection)</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">Symbols (comma-separated)</label>
+                <input
+                  type="text"
+                  id="backtest-symbols"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="AAPL, MSFT, GOOGL"
+                />
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">Start Date</label>
+                <input
+                  type="date"
+                  id="backtest-start-date"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">End Date</label>
+                <input
+                  type="date"
+                  id="backtest-end-date"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+
+            <button
+              id="run-backtest-btn"
+              class="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+            >
+              <i class="fas fa-play mr-2"></i>Run Backtest
+            </button>
+          </section>
+
+          <!-- Backtest Results -->
+          <div id="backtest-results-container"></div>
+
+          <!-- Backtest History -->
+          <section class="bg-white rounded-lg shadow-md p-6">
+            <h2 class="text-xl font-semibold mb-4 flex items-center">
+              <i class="fas fa-clock mr-2 text-blue-600"></i>
+              Backtest History
+            </h2>
+            <div id="backtest-history-list"></div>
+          </section>
+
+        </div>
+      </div>
+      <!-- END TAB: Backtesting -->
+
+      <!-- TAB: Swing Trading -->
+      <div id="tab-content-swing" class="tab-content">
+        <div class="space-y-6">
+          
+          <!-- Swing Screening Configuration -->
+          <section class="bg-white rounded-lg shadow-md p-6">
+            <h2 class="text-xl font-semibold mb-4 flex items-center">
+              <i class="fas fa-search mr-2 text-blue-600"></i>
+              Swing Screening
+            </h2>
+            
+            <div id="swing-message"></div>
+            <div id="swing-loading" class="hidden mb-4"></div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">Ticker Universe</label>
+                <select
+                  id="swing-universe-select"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">Select ticker universe...</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">Rule</label>
+                <select
+                  id="swing-rule-select"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">Select rule...</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">Timeframe</label>
+                <select
+                  id="swing-timeframe"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="1h">1 Hour</option>
+                  <option value="4h">4 Hours</option>
+                  <option value="1d" selected>1 Day</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">Lookback Days</label>
+                <input
+                  type="number"
+                  id="swing-lookback"
+                  value="30"
+                  min="1"
+                  max="365"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+
+            <button
+              id="run-screening-btn"
+              class="w-full px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
+            >
+              <i class="fas fa-search mr-2"></i>Run Screening
+            </button>
+          </section>
+
+          <!-- Screening Results -->
+          <div id="swing-results-container"></div>
+
+          <!-- Universe Management -->
+          <section class="bg-white rounded-lg shadow-md p-6">
+            <div class="flex justify-between items-center mb-4">
+              <h2 class="text-xl font-semibold flex items-center">
+                <i class="fas fa-layer-group mr-2 text-blue-600"></i>
+                Ticker Universes
+              </h2>
+              <button
+                id="create-universe-btn"
+                class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors text-sm"
+              >
+                <i class="fas fa-plus mr-2"></i>Create Universe
+              </button>
+            </div>
+            
+            <div id="universe-list"></div>
+
+            <!-- Universe Form (Hidden by default) -->
+            <div id="universe-form-container" class="hidden mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+              <h3 id="universe-form-title" class="text-lg font-semibold mb-4">Create Ticker Universe</h3>
+              <input type="hidden" id="universe-id" />
+              
+              <div class="space-y-4">
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-2">Name</label>
+                  <input
+                    type="text"
+                    id="universe-name"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="My Universe"
+                  />
+                </div>
+
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-2">Tickers (comma-separated)</label>
+                  <textarea
+                    id="universe-tickers"
+                    rows="3"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="AAPL, MSFT, GOOGL, AMZN, TSLA"
+                  ></textarea>
+                </div>
+
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-2">Description (optional)</label>
+                  <input
+                    type="text"
+                    id="universe-description"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="Description of this universe"
+                  />
+                </div>
+
+                <div class="flex gap-2">
+                  <button
+                    id="save-universe-btn"
+                    class="flex-1 px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
+                  >
+                    <i class="fas fa-save mr-2"></i>Save
+                  </button>
+                  <button
+                    id="cancel-universe-btn"
+                    class="flex-1 px-4 py-2 bg-gray-500 text-white rounded-md hover:bg-gray-600 transition-colors"
+                  >
+                    <i class="fas fa-times mr-2"></i>Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+        </div>
+      </div>
+      <!-- END TAB: Swing Trading -->
+
     </main>
 
     <!-- Toast Notification Container -->
