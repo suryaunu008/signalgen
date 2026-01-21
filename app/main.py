@@ -39,8 +39,8 @@ from typing import Optional
 import uvicorn
 from pathlib import Path
 
-from .app import signalgen_app
-from .storage.sqlite_repo import SQLiteRepository
+from app.app import signalgen_app
+from app.storage.sqlite_repo import SQLiteRepository
 
 def setup_logging() -> None:
     """Configure application logging."""
@@ -128,15 +128,18 @@ def start_fastapi_server(host: str = '127.0.0.1', port: int = 3456) -> threading
     
     def run_server():
         try:
+            logger.info(f"Starting FastAPI server on {host}:{port}")
+            # Pass app object directly instead of import string
+            # This works better in frozen/packaged applications
             uvicorn.run(
-                "app.app:app",
+                signalgen_app.app,
                 host=host,
                 port=port,
                 log_level="info",
                 access_log=False
             )
         except Exception as e:
-            logger.error(f"FastAPI server error: {e}")
+            logger.error(f"FastAPI server error: {e}", exc_info=True)
     
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
@@ -160,6 +163,7 @@ def start_socketio_server(broadcaster, host: str = '127.0.0.1', port: int = 8765
     
     def run_server():
         try:
+            logger.info(f"Starting Socket.IO server on {host}:{port}")
             # Create ASGI app from broadcaster
             socketio_app = broadcaster.create_asgi_app()
             
@@ -172,7 +176,7 @@ def start_socketio_server(broadcaster, host: str = '127.0.0.1', port: int = 8765
                 access_log=False
             )
         except Exception as e:
-            logger.error(f"Socket.IO server error: {e}")
+            logger.error(f"Socket.IO server error: {e}", exc_info=True)
     
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()

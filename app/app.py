@@ -202,8 +202,15 @@ class SignalGenApp:
             db_path: Path to SQLite database
         """
         # Get the directory of this file to resolve paths
-        current_dir = Path(__file__).parent
-        ui_dir = current_dir / "ui"
+        import sys
+        if getattr(sys, 'frozen', False):
+            # Running in PyInstaller bundle
+            base_dir = Path(sys._MEIPASS)
+        else:
+            # Running in normal Python environment
+            base_dir = Path(__file__).parent
+        
+        ui_dir = base_dir / "app" / "ui" if getattr(sys, 'frozen', False) else base_dir / "ui"
         static_dir = ui_dir / "static"
         templates_dir = ui_dir / "templates"
         
