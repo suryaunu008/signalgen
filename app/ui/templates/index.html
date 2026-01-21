@@ -15,6 +15,7 @@
     <script src="/static/js/api.js"></script>
     <script src="/static/js/backtesting.js"></script>
     <script src="/static/js/swing.js"></script>
+    <script src="/static/js/telegram.js"></script>
     <style>
       /* Price table animations */
       .price-flash {
@@ -66,6 +67,48 @@
 
       .tab-content.active {
         display: block;
+      }
+
+      /* Notification styles */
+      .notification {
+        padding: 12px 20px;
+        border-radius: 8px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        min-width: 300px;
+        max-width: 400px;
+        animation: slideIn 0.3s ease-out;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      @keyframes slideIn {
+        from {
+          transform: translateX(400px);
+          opacity: 0;
+        }
+        to {
+          transform: translateX(0);
+          opacity: 1;
+        }
+      }
+
+      .notification-success {
+        background: #d4edda;
+        color: #155724;
+        border-left: 4px solid #28a745;
+      }
+
+      .notification-error {
+        background: #f8d7da;
+        color: #721c24;
+        border-left: 4px solid #dc3545;
+      }
+
+      .notification-info {
+        background: #d1ecf1;
+        color: #0c5460;
+        border-left: 4px solid #17a2b8;
       }
     </style>
   </head>
@@ -566,6 +609,103 @@
               </button>
             </div>
           </section>
+
+          <!-- Telegram Notifications Settings -->
+          <section class="bg-white rounded-lg shadow-md p-6">
+            <h2 class="text-xl font-semibold mb-4 flex items-center">
+              <i class="fab fa-telegram mr-2 text-blue-500"></i>
+              Telegram Notifications
+            </h2>
+            
+            <!-- Status Indicator -->
+            <div class="mb-4 p-3 rounded-md bg-gray-50 border border-gray-200">
+              <div class="flex items-center justify-between">
+                <span class="text-sm font-medium text-gray-700">Status:</span>
+                <div id="telegram-status" class="text-sm">
+                  <span class="px-2 py-1 bg-gray-200 text-gray-700 rounded">Loading...</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Info Box -->
+            {% comment %} <div class="mb-4 p-3 rounded-md bg-blue-50 border border-blue-200">
+              <p class="text-xs text-blue-800 mb-2">
+                <i class="fas fa-info-circle mr-1"></i>
+                <strong>Setup:</strong>
+              </p>
+              <ol class="text-xs text-blue-700 space-y-1 ml-4 list-decimal">
+                <li>Create bot with <a href="https://t.me/botfather" target="_blank" class="underline">@BotFather</a></li>
+                <li>Send /start to your bot</li>
+                <li>Get Chat ID from: <code class="bg-blue-100 px-1 rounded">api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code></li>
+                <li>Enter settings below and test</li>
+              </ol>
+            </div> {% endcomment %}
+
+            <div class="space-y-3">
+              <!-- Bot Token -->
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">
+                  Bot Token
+                  <span class="text-xs text-gray-500">(from @BotFather)</span>
+                </label>
+                <input
+                  type="text"
+                  id="telegram-bot-token"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+                  autocomplete="off"
+                />
+                <p class="text-xs text-gray-500 mt-1">
+                  <i class="fas fa-lock"></i> Token will be masked after saving
+                </p>
+              </div>
+
+              <!-- Chat IDs -->
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">
+                  Chat IDs
+                  <span class="text-xs text-gray-500">(comma-separated)</span>
+                </label>
+                <input
+                  type="text"
+                  id="telegram-chat-ids"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="123456789,-987654321"
+                />
+                <p class="text-xs text-gray-500 mt-1">
+                  <i class="fas fa-users"></i> Separate multiple chat IDs with commas
+                </p>
+              </div>
+
+              <!-- Enable Toggle -->
+              <div class="flex items-center p-3 bg-gray-50 rounded-md">
+                <input
+                  type="checkbox"
+                  id="telegram-enabled"
+                  class="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                />
+                <label for="telegram-enabled" class="ml-2 text-sm font-medium text-gray-700 cursor-pointer">
+                  Enable Telegram Notifications
+                </label>
+              </div>
+
+              <!-- Buttons -->
+              <div class="grid grid-cols-2 gap-2">
+                <button
+                  id="telegram-save-btn"
+                  class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+                >
+                  <i class="fas fa-save mr-2"></i>Save
+                </button>
+                <button
+                  id="telegram-test-btn"
+                  class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
+                >
+                  <i class="fas fa-paper-plane mr-2"></i>Test
+                </button>
+              </div>
+            </div>
+          </section>
         </div>
       </div>
       </div>
@@ -1023,6 +1163,9 @@
         </div>
       </div>
     </div>
+
+    <!-- Notification Container for Telegram Settings -->
+    <div id="notification-container" class="fixed top-4 right-4 z-50 space-y-2"></div>
 
     <script>
       // Initialize the application when DOM is ready

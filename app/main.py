@@ -97,7 +97,11 @@ def seed_default_data(repository: SQLiteRepository) -> None:
             'max_watchlist_symbols': 5,
             'default_cooldown': 60,
             'bar_size': 5,  # 5-second bars
-            'ui_theme': 'light'
+            'ui_theme': 'light',
+            # Telegram notification settings
+            'telegram_bot_token': '',
+            'telegram_chat_ids': '',
+            'telegram_enabled': False
         }
         
         for key, value in default_settings.items():

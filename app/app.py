@@ -176,6 +176,16 @@ class ModeChange(BaseModel):
     """Model for changing operational mode."""
     mode: str = Field(..., pattern='^(scalping|backtesting|swing|swing_backtest)$')
 
+class TelegramSettings(BaseModel):
+    """Model for Telegram settings."""
+    bot_token: Optional[str] = Field(None, description="Telegram Bot Token from BotFather")
+    chat_ids: Optional[str] = Field(None, description="Comma-separated list of Telegram chat IDs")
+    enabled: Optional[bool] = Field(None, description="Enable/disable Telegram notifications")
+
+class TelegramTestRequest(BaseModel):
+    """Model for testing Telegram configuration."""
+    chat_id: Optional[str] = Field(None, description="Specific chat ID to test (optional)")
+
 class SignalGenApp:
     """
     Main FastAPI application for SignalGen system.
@@ -220,7 +230,8 @@ class SignalGenApp:
         from .storage.init_db import initialize_database as init_db
         init_db(db_path)
         
-        self.broadcaster = SocketIOBroadcaster()
+        # Initialize broadcaster with repository for Telegram integration
+        self.broadcaster = SocketIOBroadcaster(repository=self.repository)
         
         # Get timeframe from settings, default to '1m'
         timeframe = self.repository.get_setting('timeframe') or '1m'
@@ -935,6 +946,128 @@ class SignalGenApp:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Internal server error"
+                )
+        
+        # ============================================================
+        # TELEGRAM NOTIFICATION API ENDPOINTS
+        # ============================================================
+        
+        @self.app.get("/api/telegram/settings")
+        def get_telegram_settings():
+            """Get current Telegram notification settings."""
+            try:
+                settings = {
+                    'bot_token': self.repository.get_setting('telegram_bot_token', ''),
+                    'chat_ids': self.repository.get_setting('telegram_chat_ids', ''),
+                    'enabled': self.repository.get_setting('telegram_enabled', False)
+                }
+                
+                # Mask bot token for security (show only last 4 characters)
+                if settings['bot_token']:
+                    token_str = str(settings['bot_token'])
+                    if len(token_str) > 8:
+                        settings['bot_token'] = '...' + token_str[-4:]
+                    else:
+                        settings['bot_token'] = '***'
+                
+                return settings
+            except Exception as e:
+                self.logger.error(f"Error getting Telegram settings: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error"
+                )
+        
+        @self.app.put("/api/telegram/settings")
+        async def update_telegram_settings(telegram_settings: TelegramSettings):
+            """
+            Update Telegram notification settings.
+            
+            Request body:
+                bot_token: Telegram Bot Token from BotFather (optional)
+                chat_ids: Comma-separated chat IDs (optional)
+                enabled: Enable/disable notifications (optional)
+            """
+            try:
+                # Update bot token if provided
+                if telegram_settings.bot_token is not None:
+                    # Don't update if it's the masked value
+                    if not telegram_settings.bot_token.startswith('...'):
+                        self.repository.set_setting('telegram_bot_token', telegram_settings.bot_token)
+                        self.logger.info("Telegram bot token updated")
+                
+                # Update chat IDs if provided
+                if telegram_settings.chat_ids is not None:
+                    self.repository.set_setting('telegram_chat_ids', telegram_settings.chat_ids)
+                    self.logger.info("Telegram chat IDs updated")
+                
+                # Update enabled status if provided
+                if telegram_settings.enabled is not None:
+                    self.repository.set_setting('telegram_enabled', telegram_settings.enabled)
+                    self.logger.info(f"Telegram notifications {'enabled' if telegram_settings.enabled else 'disabled'}")
+                
+                # Reinitialize broadcaster's Telegram notifier with new settings
+                if hasattr(self.broadcaster, 'telegram_notifier') and self.broadcaster.telegram_notifier:
+                    await self.broadcaster.telegram_notifier.initialize()
+                    self.logger.info("Telegram notifier reinitialized with new settings")
+                
+                return {
+                    "message": "Telegram settings updated successfully",
+                    "enabled": self.repository.get_setting('telegram_enabled', False)
+                }
+            except Exception as e:
+                self.logger.error(f"Error updating Telegram settings: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error"
+                )
+        
+        @self.app.post("/api/telegram/test")
+        async def test_telegram_notification(test_request: TelegramTestRequest):
+            """
+            Send a test message to verify Telegram configuration.
+            
+            Request body:
+                chat_id: Optional specific chat ID to test
+            """
+            try:
+                # Check if Telegram is configured
+                bot_token = self.repository.get_setting('telegram_bot_token')
+                if not bot_token:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Telegram bot token not configured"
+                    )
+                
+                # Initialize temporary notifier if broadcaster doesn't have one
+                if not hasattr(self.broadcaster, 'telegram_notifier') or not self.broadcaster.telegram_notifier:
+                    from .notifications.telegram_notifier import TelegramNotifier
+                    temp_notifier = TelegramNotifier(self.repository)
+                    await temp_notifier.initialize()
+                else:
+                    temp_notifier = self.broadcaster.telegram_notifier
+                
+                # Send test message
+                success = await temp_notifier.send_test_message(test_request.chat_id)
+                
+                if success:
+                    return {
+                        "message": "Test message sent successfully",
+                        "success": True
+                    }
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="Failed to send test message. Check bot token and chat ID."
+                    )
+                    
+            except HTTPException:
+                raise
+            except Exception as e:
+                self.logger.error(f"Error testing Telegram notification: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Internal server error: {str(e)}"
                 )
         
         # ============================================================

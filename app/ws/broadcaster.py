@@ -46,12 +46,13 @@ class SocketIOBroadcaster:
     types of events and provides comprehensive error handling.
     """
     
-    def __init__(self, cors_origins: List[str] = None):
+    def __init__(self, cors_origins: List[str] = None, repository=None):
         """
         Initialize the Socket.IO broadcaster.
         
         Args:
             cors_origins: List of allowed CORS origins
+            repository: SQLite repository instance for Telegram notifier
         """
         self.logger = logging.getLogger(__name__)
         
@@ -83,6 +84,10 @@ class SocketIOBroadcaster:
         
         # Event loop reference for thread-safe broadcasting
         self._loop = None
+        
+        # Telegram notifier (optional)
+        self.telegram_notifier = None
+        self.repository = repository
         
         # Register event handlers
         self._register_handlers()
@@ -227,7 +232,7 @@ class SocketIOBroadcaster:
     
     async def broadcast_signal(self, signal_data: Dict[str, Any]) -> None:
         """
-        Broadcast signal events to all connected clients.
+        Broadcast signal events to all connected clients and Telegram.
         
         Args:
             signal_data: Signal data with format:
@@ -253,8 +258,15 @@ class SocketIOBroadcaster:
                 "timestamp": signal_data.get('timestamp', datetime.utcnow().isoformat())
             }
             
-            # Broadcast to signals room
+            # Broadcast to signals room (WebSocket)
             await self.sio.emit('signal', signal_event, room=self.ROOMS['signals'])
+            
+            # Send to Telegram if configured
+            if self.telegram_notifier:
+                try:
+                    await self.telegram_notifier.send_signal(signal_data)
+                except Exception as telegram_error:
+                    self.logger.warning(f"Failed to send Telegram notification: {telegram_error}")
             
             self.logger.info(f"Signal broadcasted: {signal_data.get('symbol')} @ {signal_data.get('price')}")
             
@@ -631,8 +643,21 @@ class SocketIOBroadcaster:
         return socketio.ASGIApp(self.sio)
     
     async def initialize(self) -> None:
-        """Initialize the broadcaster (placeholder for future initialization)."""
+        """Initialize the broadcaster and Telegram notifier."""
         self.logger.info("SocketIOBroadcaster initialized and ready")
+        
+        # Initialize Telegram notifier if repository is available
+        if self.repository:
+            try:
+                from ..notifications.telegram_notifier import TelegramNotifier
+                self.telegram_notifier = TelegramNotifier(self.repository)
+                await self.telegram_notifier.initialize()
+                self.logger.info("Telegram notifier integration initialized")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize Telegram notifier: {e}")
+                self.telegram_notifier = None
+        else:
+            self.logger.info("Repository not provided, Telegram notifications disabled")
     
     async def shutdown(self) -> None:
         """Shutdown the broadcaster and cleanup resources."""
