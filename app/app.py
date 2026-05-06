@@ -32,6 +32,7 @@ import threading
 import time
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, status, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -174,7 +175,7 @@ class SwingScreenRequest(BaseModel):
     """Model for swing screening request."""
     rule_id: int = Field(..., gt=0)
     ticker_universe_id: int = Field(..., gt=0)
-    timeframe: str = Field(default='1d')
+    timeframe: str = Field(default='1d', pattern='^(1h|4h|1d)$')
     lookback_days: int = Field(default=30, ge=1, le=365)
 
 class UniverseCreate(BaseModel):
@@ -1442,6 +1443,8 @@ class SignalGenApp:
             """
             try:
                 from .engines.swing_screening_engine import SwingScreeningEngine
+                request_id = str(uuid4())
+                start_time = time.perf_counter()
                 
                 # Create screening engine
                 engine = SwingScreeningEngine(timeframe=request.timeframe)
@@ -1457,15 +1460,19 @@ class SignalGenApp:
                 # Filter out errors for summary
                 successful = [r for r in results if r['status'] == 'success']
                 signals_found = [r for r in successful if r['signal'] is not None]
-                
+                no_data = [r for r in results if r.get('error_message') == 'No data available']
+                duration_ms = int((time.perf_counter() - start_time) * 1000)
                 return {
                     "message": "Screening completed successfully",
+                    "request_id": request_id,
                     "results": results,
                     "summary": {
                         "total_tickers": len(results),
                         "successful": len(successful),
                         "signals_found": len(signals_found),
-                        "errors": len(results) - len(successful)
+                        "errors": len(results) - len(successful),
+                        "no_data": len(no_data),
+                        "duration_ms": duration_ms
                     }
                 }
                 
@@ -1475,10 +1482,11 @@ class SignalGenApp:
                     detail=str(e)
                 )
             except Exception as e:
-                self.logger.error(f"Screening error: {e}")
+                request_id = str(uuid4())
+                self.logger.exception(f"Screening error (request_id={request_id}): {e}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Screening failed: {str(e)}"
+                    detail=f"Screening failed due to an internal error. request_id={request_id}"
                 )
         
         @self.app.get("/api/swing/universes")

@@ -57,6 +57,8 @@ class SwingScreeningEngine:
         self.timeframe = timeframe
         self.repository = SQLiteRepository()
         self.logger = logging.getLogger(__name__)
+        self.max_concurrency = 8
+        self.max_retries = 3
         
         # Validate timeframe
         if timeframe not in ['1h', '4h', '1d']:
@@ -112,38 +114,30 @@ class SwingScreeningEngine:
         end_date = datetime.now()
         start_date = end_date - timedelta(days=lookback_days)
         
-        # Process tickers concurrently (but respect rate limits)
-        # Yahoo Finance allows ~2000 requests/hour
-        # Process in batches of 10 with small delays
-        batch_size = 10
+        # Process tickers with bounded concurrency + retry/backoff.
+        semaphore = asyncio.Semaphore(self.max_concurrency)
+
+        async def guarded_screen(ticker: str) -> Dict[str, Any]:
+            async with semaphore:
+                return await self._screen_ticker_with_retry(ticker, rule, start_date, end_date)
+
+        gathered = await asyncio.gather(*[guarded_screen(t) for t in tickers], return_exceptions=True)
         results = []
-        
-        for i in range(0, len(tickers), batch_size):
-            batch = tickers[i:i + batch_size]
-            batch_results = await asyncio.gather(
-                *[self._screen_ticker(ticker, rule, start_date, end_date) for ticker in batch],
-                return_exceptions=True
-            )
-            
-            # Handle exceptions
-            for ticker, result in zip(batch, batch_results):
-                if isinstance(result, Exception):
-                    self.logger.error(f"Error screening {ticker}: {result}")
-                    results.append({
-                        'symbol': ticker,
-                        'signal': None,
-                        'price': None,
-                        'timestamp': None,
-                        'indicators': {},
-                        'status': 'error',
-                        'error_message': str(result)
-                    })
-                else:
-                    results.append(result)
-            
-            # Small delay between batches to respect rate limits
-            if i + batch_size < len(tickers):
-                await asyncio.sleep(1)
+
+        for ticker, result in zip(tickers, gathered):
+            if isinstance(result, Exception):
+                self.logger.error(f"Error screening {ticker}: {result}")
+                results.append({
+                    'symbol': ticker,
+                    'signal': None,
+                    'price': None,
+                    'timestamp': None,
+                    'indicators': {},
+                    'status': 'error',
+                    'error_message': str(result)
+                })
+            else:
+                results.append(result)
         
         # Log summary
         signals_found = sum(1 for r in results if r['signal'] is not None)
@@ -151,6 +145,43 @@ class SwingScreeningEngine:
         self.logger.info(f"Screening complete: {signals_found} signals found, {errors} errors")
         
         return results
+
+    async def _screen_ticker_with_retry(
+        self,
+        symbol: str,
+        rule: Dict,
+        start_date: datetime,
+        end_date: datetime
+    ) -> Dict[str, Any]:
+        """
+        Screen a single ticker with simple exponential backoff for transient failures.
+        """
+        last_result = None
+
+        for attempt in range(1, self.max_retries + 1):
+            result = await self._screen_ticker(symbol, rule, start_date, end_date)
+            last_result = result
+
+            if result.get('status') == 'success':
+                return result
+
+            error_message = (result.get('error_message') or '').lower()
+            non_retryable = (
+                'insufficient data' in error_message or
+                'no data available' in error_message or
+                'not found' in error_message
+            )
+            if non_retryable or attempt == self.max_retries:
+                return result
+
+            backoff_seconds = 0.5 * (2 ** (attempt - 1))
+            self.logger.warning(
+                f"Retrying {symbol} after error on attempt {attempt}/{self.max_retries}: "
+                f"{result.get('error_message')} (sleep={backoff_seconds:.1f}s)"
+            )
+            await asyncio.sleep(backoff_seconds)
+
+        return last_result
     
     async def _screen_ticker(
         self,

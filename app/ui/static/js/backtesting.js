@@ -2,6 +2,8 @@ class BacktestingUI {
   constructor() {
     this.currentResults = null;
     this.plBasis = 'close';
+    this.currentPage = 1;
+    this.pageSize = 25;
   }
 
   async init() {
@@ -169,49 +171,7 @@ class BacktestingUI {
 
     const thead = `<tr>${headers.map((h, idx) => `<th class="${idx < 3 ? 'sticky z-20 bg-white' : 'bg-slate-100'} px-3 py-3 text-left text-xs font-semibold tracking-wide text-slate-700 uppercase border-b border-slate-200 ${idx === 0 ? 'left-0' : idx === 1 ? 'left-[120px]' : idx === 2 ? 'left-[320px]' : ''}">${h}</th>`).join('')}</tr>`;
 
-    const rowsHtml = (result.rows || []).map((row) => {
-      const cells = [
-        `<span class="font-semibold text-slate-900">${row.symbol}</span>`,
-        `<span class="text-slate-700">${new Date(row.entry_time).toLocaleString()}</span>`,
-        `<span class="font-semibold text-slate-900">${Number(row.entry_price).toFixed(4)}</span>`
-      ];
-
-      const entryPriceNum = Number(row.entry_price);
-      for (let i = 1; i <= result.n_steps; i += 1) {
-        const step = row.steps?.[`T+${i}`] || null;
-        if (!step) {
-          cells.push('-');
-        } else {
-          const priceField = result.pl_basis || 'close';
-          const basisNum = Number(step[priceField]);
-          const pl = basisNum - entryPriceNum;
-          const plPct = entryPriceNum === 0 ? 0 : (pl / entryPriceNum) * 100;
-          const plClass = pl > 0
-            ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
-            : pl < 0
-              ? 'text-rose-700 bg-rose-50 border-rose-200'
-              : 'text-slate-700 bg-slate-100 border-slate-300';
-          const sign = pl > 0 ? '+' : '';
-          cells.push(
-            `<div class="min-w-[220px] rounded-lg border border-slate-200 bg-white p-2">
-              <div class="mb-1 text-[11px] font-semibold text-slate-500">T+${i}</div>
-              <div class="grid grid-cols-2 gap-x-2 gap-y-1 text-[11px] text-slate-600">
-                <span>O <b class="text-slate-800">${Number(step.open).toFixed(4)}</b></span>
-                <span>H <b class="text-slate-800">${Number(step.high).toFixed(4)}</b></span>
-                <span>L <b class="text-slate-800">${Number(step.low).toFixed(4)}</b></span>
-                <span>C <b class="text-slate-800">${Number(step.close).toFixed(4)}</b></span>
-              </div>
-              <div class="mt-2 text-[11px] text-slate-500">Basis: <b class="text-slate-700 uppercase">${priceField}</b> (${basisNum.toFixed(4)})</div>
-              <div class="mt-2 rounded-md border px-2 py-1 text-xs font-semibold ${plClass}">
-                P/L ${sign}${pl.toFixed(4)} (${sign}${plPct.toFixed(2)}%)
-              </div>
-            </div>`
-          );
-        }
-      }
-
-      return `<tr class="odd:bg-white even:bg-slate-50 hover:bg-blue-50/40">${cells.map((v, idx) => `<td class="${idx < 3 ? 'sticky z-10 bg-white' : ''} px-3 py-2 align-top text-sm border-b border-slate-200 ${idx === 0 ? 'left-0 min-w-[120px]' : idx === 1 ? 'left-[120px] min-w-[200px]' : idx === 2 ? 'left-[320px] min-w-[120px]' : ''}">${v}</td>`).join('')}</tr>`;
-    }).join('');
+    this.currentPage = 1;
 
     container.innerHTML = `
       <section class="bg-gradient-to-b from-slate-50 to-white rounded-xl border border-slate-200 shadow-sm p-5">
@@ -226,11 +186,145 @@ class BacktestingUI {
         <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
           <table class="min-w-full bg-white">
             <thead>${thead}</thead>
-            <tbody>${rowsHtml || '<tr><td class="px-3 py-4 text-sm text-gray-500" colspan="999">No rows</td></tr>'}</tbody>
+            <tbody id="backtest-results-body"></tbody>
           </table>
         </div>
+        <div id="backtest-pagination-bar" class="mt-4 flex items-center justify-between"></div>
       </section>
     `;
+    this.renderBacktestTable();
+  }
+
+  buildBacktestRowHtml(row, nSteps, plBasis) {
+    const cells = [
+      `<span class="font-semibold text-slate-900">${row.symbol}</span>`,
+      `<span class="text-slate-700">${new Date(row.entry_time).toLocaleString()}</span>`,
+      `<span class="font-semibold text-slate-900">${Number(row.entry_price).toFixed(4)}</span>`
+    ];
+
+    const entryPriceNum = Number(row.entry_price);
+    for (let i = 1; i <= nSteps; i += 1) {
+      const step = row.steps?.[`T+${i}`] || null;
+      if (!step) {
+        cells.push('-');
+      } else {
+        const priceField = plBasis || 'close';
+        const basisNum = Number(step[priceField]);
+        const pl = basisNum - entryPriceNum;
+        const plPct = entryPriceNum === 0 ? 0 : (pl / entryPriceNum) * 100;
+        const plClass = pl > 0
+          ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
+          : pl < 0
+            ? 'text-rose-700 bg-rose-50 border-rose-200'
+            : 'text-slate-700 bg-slate-100 border-slate-300';
+        const sign = pl > 0 ? '+' : '';
+        cells.push(
+          `<div class="min-w-[220px] rounded-lg border border-slate-200 bg-white p-2">
+            <div class="mb-1 text-[11px] font-semibold text-slate-500">T+${i}</div>
+            <div class="grid grid-cols-2 gap-x-2 gap-y-1 text-[11px] text-slate-600">
+              <span>O <b class="text-slate-800">${Number(step.open).toFixed(4)}</b></span>
+              <span>H <b class="text-slate-800">${Number(step.high).toFixed(4)}</b></span>
+              <span>L <b class="text-slate-800">${Number(step.low).toFixed(4)}</b></span>
+              <span>C <b class="text-slate-800">${Number(step.close).toFixed(4)}</b></span>
+            </div>
+            <div class="mt-2 text-[11px] text-slate-500">Basis: <b class="text-slate-700 uppercase">${priceField}</b> (${basisNum.toFixed(4)})</div>
+            <div class="mt-2 rounded-md border px-2 py-1 text-xs font-semibold ${plClass}">
+              P/L ${sign}${pl.toFixed(4)} (${sign}${plPct.toFixed(2)}%)
+            </div>
+          </div>`
+        );
+      }
+    }
+
+    return `<tr class="odd:bg-white even:bg-slate-50 hover:bg-blue-50/40">${cells.map((v, idx) => `<td class="${idx < 3 ? 'sticky z-10 bg-white' : ''} px-3 py-2 align-top text-sm border-b border-slate-200 ${idx === 0 ? 'left-0 min-w-[120px]' : idx === 1 ? 'left-[120px] min-w-[200px]' : idx === 2 ? 'left-[320px] min-w-[120px]' : ''}">${v}</td>`).join('')}</tr>`;
+  }
+
+  renderBacktestTable() {
+    if (!this.currentResults || !Array.isArray(this.currentResults.rows)) return;
+    const tbody = document.getElementById('backtest-results-body');
+    if (!tbody) return;
+
+    const rows = this.currentResults.rows;
+    const totalItems = rows.length;
+    const totalPages = Math.max(1, Math.ceil(totalItems / this.pageSize));
+    if (this.currentPage > totalPages) this.currentPage = totalPages;
+    const start = (this.currentPage - 1) * this.pageSize;
+    const end = Math.min(start + this.pageSize, totalItems);
+    const pageRows = rows.slice(start, end);
+
+    tbody.innerHTML = pageRows.length > 0
+      ? pageRows.map((row) => this.buildBacktestRowHtml(row, this.currentResults.n_steps, this.currentResults.pl_basis)).join('')
+      : '<tr><td class="px-3 py-4 text-sm text-gray-500" colspan="999">No rows</td></tr>';
+
+    this.renderBacktestPagination(totalItems, totalPages, totalItems === 0 ? 0 : start + 1, end);
+  }
+
+  renderBacktestPagination(totalItems, totalPages, from, to) {
+    const bar = document.getElementById('backtest-pagination-bar');
+    if (!bar) return;
+    bar.innerHTML = '';
+
+    const left = document.createElement('div');
+    left.className = 'text-sm text-gray-600';
+    left.textContent = totalItems === 0 ? 'No rows' : `Showing ${from}-${to} of ${totalItems}`;
+
+    const right = document.createElement('div');
+    right.className = 'flex items-center gap-2';
+
+    const sizeWrap = document.createElement('label');
+    sizeWrap.className = 'text-sm text-gray-600 flex items-center gap-1';
+    sizeWrap.textContent = 'Rows';
+    const sizeSelect = document.createElement('select');
+    sizeSelect.className = 'px-2 py-1 rounded border border-gray-300 text-sm';
+    [10, 25, 50, 100].forEach((size) => {
+      const opt = document.createElement('option');
+      opt.value = String(size);
+      opt.textContent = String(size);
+      if (this.pageSize === size) opt.selected = true;
+      sizeSelect.appendChild(opt);
+    });
+    sizeSelect.addEventListener('change', (event) => {
+      const next = parseInt(event.target.value, 10);
+      if (!Number.isNaN(next) && next > 0) {
+        this.pageSize = next;
+        this.currentPage = 1;
+        this.renderBacktestTable();
+      }
+    });
+    sizeWrap.appendChild(sizeSelect);
+
+    const prev = document.createElement('button');
+    prev.className = 'px-3 py-1 rounded border border-gray-300 text-sm disabled:opacity-50';
+    prev.textContent = 'Prev';
+    prev.disabled = this.currentPage <= 1;
+    prev.addEventListener('click', () => {
+      if (this.currentPage > 1) {
+        this.currentPage -= 1;
+        this.renderBacktestTable();
+      }
+    });
+
+    const page = document.createElement('span');
+    page.className = 'text-sm text-gray-700';
+    page.textContent = `Page ${this.currentPage}/${totalPages}`;
+
+    const next = document.createElement('button');
+    next.className = 'px-3 py-1 rounded border border-gray-300 text-sm disabled:opacity-50';
+    next.textContent = 'Next';
+    next.disabled = this.currentPage >= totalPages;
+    next.addEventListener('click', () => {
+      if (this.currentPage < totalPages) {
+        this.currentPage += 1;
+        this.renderBacktestTable();
+      }
+    });
+
+    right.appendChild(sizeWrap);
+    right.appendChild(prev);
+    right.appendChild(page);
+    right.appendChild(next);
+    bar.appendChild(left);
+    bar.appendChild(right);
   }
 
   exportCsv() {
