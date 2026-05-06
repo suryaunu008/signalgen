@@ -164,6 +164,16 @@ def start_socketio_server(broadcaster, host: str = '127.0.0.1', port: int = 8765
     def run_server():
         try:
             logger.info(f"Starting Socket.IO server on {host}:{port}")
+            
+            # Initialize broadcaster (including Telegram notifier)
+            async def init_broadcaster():
+                await broadcaster.initialize()
+            
+            # Run initialization
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(init_broadcaster())
+            
             # Create ASGI app from broadcaster
             socketio_app = broadcaster.create_asgi_app()
             

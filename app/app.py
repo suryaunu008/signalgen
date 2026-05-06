@@ -276,7 +276,11 @@ class SignalGenApp:
         async def serve_ui(request: Request):
             """Serve the main UI dashboard."""
             if self.templates:
-                return self.templates.TemplateResponse("index.html", {"request": request})
+                return self.templates.TemplateResponse(
+                    request=request,
+                    name="index.html",
+                    context={}
+                )
             else:
                 # Fallback if templates directory doesn't exist
                 return HTMLResponse("""

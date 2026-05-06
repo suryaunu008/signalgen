@@ -145,7 +145,15 @@
             class="tab-button px-6 py-3 text-sm font-medium text-gray-700 hover:text-blue-600 hover:bg-gray-50 border-b-2 border-transparent active"
           >
             <i class="fas fa-bolt mr-2"></i>
-            Real-time Scalping
+            Real Time Signal
+          </button>
+          <button
+            onclick="switchTab('swing')"
+            id="tab-btn-swing"
+            class="tab-button px-6 py-3 text-sm font-medium text-gray-700 hover:text-blue-600 hover:bg-gray-50 border-b-2 border-transparent"
+          >
+            <i class="fas fa-search mr-2"></i>
+            Screener
           </button>
           <button
             onclick="switchTab('backtesting')"
@@ -155,21 +163,13 @@
             <i class="fas fa-history mr-2"></i>
             Backtesting
           </button>
-          <button
-            onclick="switchTab('swing')"
-            id="tab-btn-swing"
-            class="tab-button px-6 py-3 text-sm font-medium text-gray-700 hover:text-blue-600 hover:bg-gray-50 border-b-2 border-transparent"
-          >
-            <i class="fas fa-chart-line mr-2"></i>
-            Swing Trading
-          </button>
         </div>
       </div>
     </nav>
 
     <!-- Main Content -->
     <main class="container mx-auto px-4 py-6"      
-      <!-- TAB: Real-time Scalping -->
+      <!-- TAB: Real Time Signal -->
       <div id="tab-content-scalping" class="tab-content active">      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <!-- Left Column -->
         <div class="lg:col-span-2 space-y-6">
@@ -177,7 +177,7 @@
           <section class="bg-white rounded-lg shadow-md p-6">
             <h2 class="text-xl font-semibold mb-4 flex items-center">
               <i class="fas fa-cogs mr-2 text-blue-600"></i>
-              Scalping Control Panel
+              Real Time Signal Control Panel
             </h2>
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
@@ -709,7 +709,7 @@
         </div>
       </div>
       </div>
-      <!-- END TAB: Real-time Scalping -->
+      <!-- END TAB: Real Time Signal -->
 
       <!-- TAB: Backtesting -->
       <div id="tab-content-backtesting" class="tab-content">
@@ -743,7 +743,7 @@
                   class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="scalping">Scalping</option>
-                  <option value="swing">Swing Trading</option>
+                  <option value="swing">Screener</option>
                 </select>
               </div>
 
@@ -837,15 +837,15 @@
       </div>
       <!-- END TAB: Backtesting -->
 
-      <!-- TAB: Swing Trading -->
+      <!-- TAB: Screener -->
       <div id="tab-content-swing" class="tab-content">
         <div class="space-y-6">
           
-          <!-- Swing Screening Configuration -->
+          <!-- Screener Configuration -->
           <section class="bg-white rounded-lg shadow-md p-6">
             <h2 class="text-xl font-semibold mb-4 flex items-center">
               <i class="fas fa-search mr-2 text-blue-600"></i>
-              Swing Screening
+              Screener
             </h2>
             
             <div id="swing-message"></div>
@@ -981,7 +981,7 @@
 
         </div>
       </div>
-      <!-- END TAB: Swing Trading -->
+      <!-- END TAB: Screener -->
 
     </main>
 

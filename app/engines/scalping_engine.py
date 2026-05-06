@@ -82,6 +82,8 @@ class ScalpingEngine:
         self.subscribed_contracts: Dict[str, Contract] = {}  # symbol -> contract mapping
         self.contract_symbol_map: Dict[int, str] = {}  # contract conId -> symbol mapping
         self.real_time_bars: Dict[str, object] = {}  # symbol -> RealTimeBars object mapping
+        self.market_data_type = 1  # 1=live, 3=delayed
+        self._delayed_market_data_requested = False
         
         # Per-symbol cooldown tracking
         self.symbol_cooldowns: Dict[str, float] = {}  # symbol -> cooldown_end_time mapping
@@ -128,6 +130,10 @@ class ScalpingEngine:
             # Set up connection event handlers
             self.ib.disconnectedEvent += self._on_disconnected
             self.ib.errorEvent += self._on_error
+
+            if self.market_data_type == 3:
+                self.ib.reqMarketDataType(3)
+                self.logger.info("Re-applied delayed market data type after reconnect")
             
             return True
                 
@@ -155,6 +161,52 @@ class ScalpingEngine:
             self.is_connected = False
         elif errorCode == 200:  # No security definition has been found for the request
             self.logger.error(f"Invalid contract: {contract}")
+        elif errorCode == 420:
+            self.logger.warning("Realtime market data rejected; switching to delayed market data")
+            self._schedule_delayed_market_data_fallback()
+
+    def _schedule_delayed_market_data_fallback(self) -> None:
+        """Schedule fallback to delayed market data after IBKR realtime error 420."""
+        if self._delayed_market_data_requested:
+            return
+
+        self._delayed_market_data_requested = True
+
+        try:
+            if self.event_loop and self.event_loop.is_running():
+                asyncio.run_coroutine_threadsafe(
+                    self._switch_to_delayed_market_data(),
+                    self.event_loop
+                )
+            else:
+                asyncio.ensure_future(self._switch_to_delayed_market_data())
+        except Exception as e:
+            self.logger.error(f"Failed to schedule delayed market data fallback: {e}")
+
+    async def _switch_to_delayed_market_data(self) -> None:
+        """Switch IBKR market data requests to delayed mode and refresh subscriptions."""
+        if not self.ib.isConnected():
+            self.logger.warning("Cannot switch to delayed market data - IBKR is not connected")
+            return
+
+        try:
+            self.ib.reqMarketDataType(3)
+            self.market_data_type = 3
+            self.logger.info("IBKR market data type set to delayed (3)")
+
+            symbols = self.active_watchlist.copy()
+            if symbols:
+                await self._refresh_market_data_subscriptions(symbols)
+
+            try:
+                status = self.get_engine_status_sync()
+                status['market_data_type'] = 'delayed'
+                status['message'] = 'Realtime data unavailable; using delayed market data.'
+                self.broadcaster.broadcast_engine_status_sync(status)
+            except Exception as e:
+                self.logger.error(f"Error broadcasting delayed market data status: {e}")
+        except Exception as e:
+            self.logger.error(f"Failed to switch to delayed market data: {e}")
     
     async def _reconnect_to_ibkr(self) -> None:
         """Attempt to reconnect to IBKR with exponential backoff."""
@@ -430,6 +482,10 @@ class ScalpingEngine:
             return False
         
         try:
+            if self.market_data_type == 3:
+                self.ib.reqMarketDataType(3)
+                self.logger.info("Using delayed market data type for new subscriptions")
+
             # Initialize symbols in indicator engine
             for symbol in symbols:
                 if symbol not in self.active_watchlist:
@@ -505,6 +561,59 @@ class ScalpingEngine:
         except Exception as e:
             self.logger.error(f"Failed to subscribe to symbols {symbols}: {e}")
             return False
+
+    async def _refresh_market_data_subscriptions(self, symbols: List[str]) -> None:
+        """
+        Recreate active IBKR market data requests after changing market data type.
+
+        Args:
+            symbols: Symbols to resubscribe with the current market data type.
+        """
+        self.logger.info(f"Refreshing market data subscriptions for delayed fallback: {symbols}")
+
+        for symbol in symbols:
+            contract = self.subscribed_contracts.get(symbol)
+
+            if self.ib.isConnected() and symbol in self.real_time_bars:
+                try:
+                    bars = self.real_time_bars[symbol]
+                    try:
+                        bars.updateEvent -= self._on_bar_update
+                    except Exception:
+                        pass
+                    self.ib.cancelRealTimeBars(bars)
+                    self.logger.info(f"Cancelled existing bars before delayed resubscribe for {symbol}")
+                except Exception as e:
+                    self.logger.error(f"Error canceling bars before delayed resubscribe for {symbol}: {e}")
+
+            if self.ib.isConnected() and contract:
+                try:
+                    if hasattr(self, 'subscribed_tickers') and symbol in self.subscribed_tickers:
+                        ticker = self.subscribed_tickers[symbol]
+                        try:
+                            ticker.updateEvent -= self._on_ticker_update
+                        except Exception:
+                            pass
+                        self.ib.cancelMktData(contract)
+                        del self.subscribed_tickers[symbol]
+                        self.logger.info(f"Cancelled existing ticker before delayed resubscribe for {symbol}")
+                except Exception as e:
+                    self.logger.error(f"Error canceling ticker before delayed resubscribe for {symbol}: {e}")
+
+            if symbol in self.real_time_bars:
+                del self.real_time_bars[symbol]
+
+            if contract and getattr(contract, 'conId', 0) in self.contract_symbol_map:
+                del self.contract_symbol_map[contract.conId]
+
+            if symbol in self.subscribed_contracts:
+                del self.subscribed_contracts[symbol]
+
+            if symbol in self.active_watchlist:
+                self.active_watchlist.remove(symbol)
+
+        await asyncio.sleep(0.5)
+        await self.subscribe_symbols(symbols)
     
     async def unsubscribe_symbols(self, symbols: List[str]) -> None:
         """
@@ -927,6 +1036,7 @@ class ScalpingEngine:
                 'port': self.ib_port,
                 'client_id': self.ib_client_id
             },
+            'market_data_type': 'delayed' if self.market_data_type == 3 else 'live',
             'indicator_engine_status': self.indicator_engine.get_engine_status()
         }
     
@@ -953,6 +1063,7 @@ class ScalpingEngine:
                     'port': self.ib_port,
                     'client_id': self.ib_client_id
                 },
+                'market_data_type': 'delayed' if self.market_data_type == 3 else 'live',
                 'indicator_engine_status': {}  # Skip for now to avoid blocking
             }
         except Exception as e:

@@ -153,13 +153,23 @@ class TelegramNotifier:
         """
         try:
             symbol = signal_data.get('symbol', 'UNKNOWN')
-            signal_type = signal_data.get('type', 'UNKNOWN')
+            signal_type = signal_data.get('signal_type', signal_data.get('type', 'UNKNOWN'))
             timestamp = signal_data.get('timestamp', datetime.now().isoformat())
-            rule_name = signal_data.get('rule_name', 'N/A')
             
-            # Get indicator values if available
-            indicators = signal_data.get('indicator_values', {})
-            price = signal_data.get('price', indicators.get('close', 'N/A'))
+            # Get rule info from repository if rule_id is available
+            rule_name = signal_data.get('rule_name', 'N/A')
+            rule_id = signal_data.get('rule_id')
+            if rule_id and self.repository:
+                try:
+                    rule = self.repository.get_rule(rule_id)
+                    if rule:
+                        rule_name = rule.get('name', 'N/A')
+                except:
+                    pass
+            
+            # Get indicator values - try both 'indicators' and 'indicator_values'
+            indicators = signal_data.get('indicators', signal_data.get('indicator_values', {}))
+            price = signal_data.get('price', indicators.get('PRICE', indicators.get('close', 'N/A')))
             
             # Signal emoji
             emoji = "🚀" if signal_type.upper() == "BUY" else "🔻" if signal_type.upper() == "SELL" else "⚠️"
@@ -175,17 +185,23 @@ class TelegramNotifier:
                 f"*Rule:* {rule_name}",
             ]
             
-            # Add key indicators if available
+            # Add ALL indicators if available
             if indicators:
                 message_lines.append("")
                 message_lines.append("*📊 Indicators:*")
                 
-                # Common indicators to show
-                key_indicators = ['rsi', 'macd', 'signal', 'bb_upper', 'bb_lower', 'adx']
-                for key in key_indicators:
-                    if key in indicators and indicators[key] is not None:
-                        value = indicators[key]
-                        formatted_value = f"{float(value):.2f}" if isinstance(value, (int, float)) else str(value)
+                # Sort indicators alphabetically for consistent display
+                sorted_indicators = sorted(indicators.items())
+                
+                for key, value in sorted_indicators:
+                    if value is not None:
+                        # Format value based on type
+                        if isinstance(value, (int, float)):
+                            formatted_value = f"{float(value):.4f}"
+                        else:
+                            formatted_value = str(value)
+                        
+                        # Format display name (convert snake_case to readable format)
                         display_name = key.replace('_', ' ').upper()
                         message_lines.append(f"  • {display_name}: `{formatted_value}`")
             
@@ -197,7 +213,7 @@ class TelegramNotifier:
             
         except Exception as e:
             self.logger.error(f"Error formatting signal message: {e}")
-            return f"⚠️ Signal Alert: {signal_data.get('symbol', 'UNKNOWN')} - {signal_data.get('type', 'UNKNOWN')}"
+            return f"⚠️ Signal Alert: {signal_data.get('symbol', 'UNKNOWN')} - {signal_data.get('signal_type', signal_data.get('type', 'UNKNOWN'))}"
     
     def _format_price(self, price: Any) -> str:
         """Format price value."""
