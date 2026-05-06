@@ -31,7 +31,7 @@ import logging
 import threading
 import time
 from typing import Dict, List, Optional, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, status, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -152,6 +152,23 @@ class BacktestRequest(BaseModel):
     start_date: str = Field(...)  # ISO format date string
     end_date: str = Field(...)    # ISO format date string
     data_source: str = Field(..., pattern='^(ibkr|yahoo)$')
+
+class ManualBacktestEntry(BaseModel):
+    """Manual backtest entry row."""
+    symbol: str = Field(..., min_length=1, max_length=20)
+    entry_time: str = Field(...)  # ISO datetime string
+
+class BacktestScreenRequest(BaseModel):
+    """Model for new backtesting screen request (rule/manual)."""
+    mode: str = Field(..., pattern='^(rule|manual)$')
+    timeframe: str = Field(..., pattern='^(1m|5m|15m|1h|4h|1d)$')
+    n_steps: int = Field(..., ge=1, le=100)
+    data_source: str = Field(..., pattern='^(ibkr|yahoo)$')
+    rule_id: Optional[int] = Field(None, gt=0)
+    start_at: Optional[str] = Field(None)  # ISO datetime string
+    end_at: Optional[str] = Field(None)    # ISO datetime string
+    symbols: Optional[List[str]] = Field(None, max_items=200)
+    manual_entries: Optional[List[ManualBacktestEntry]] = Field(None, max_items=2000)
 
 class SwingScreenRequest(BaseModel):
     """Model for swing screening request."""
@@ -1084,6 +1101,204 @@ class SignalGenApp:
         # ============================================================
         # BACKTESTING API ENDPOINTS
         # ============================================================
+
+        @self.app.post("/api/backtest/screen")
+        async def run_backtest_screen(request: BacktestScreenRequest):
+            """
+            New backtesting screen endpoint with 2 modes:
+            - rule: generate entries from rule signals within date range
+            - manual: user-provided entry timestamps
+            """
+            try:
+                from .data_sources import IBKRDataSource, YahooDataSource
+                from .core.rule_engine import RuleEngine
+                from .core.indicator_engine import IndicatorEngine
+                from datetime import timezone
+
+                def _parse_dt(value: str, field_name: str) -> datetime:
+                    try:
+                        return datetime.fromisoformat(value.replace('Z', '+00:00'))
+                    except Exception as ex:
+                        raise ValueError(f"Invalid {field_name}: {value}") from ex
+
+                def _normalize_dt(value: datetime) -> datetime:
+                    if value.tzinfo is not None:
+                        return value.astimezone(timezone.utc).replace(tzinfo=None)
+                    return value
+
+                # Create data source
+                if request.data_source == 'ibkr':
+                    data_source = IBKRDataSource()
+                else:
+                    data_source = YahooDataSource()
+
+                # Resolve symbols
+                symbols = [s.upper().strip() for s in (request.symbols or []) if s and s.strip()]
+                if request.mode == "rule" and not symbols:
+                    symbols = self.repository.get_active_symbols()
+                if request.mode == "rule" and not symbols:
+                    raise ValueError("No symbols provided and no active watchlist found")
+
+                entries = []
+                candle_cache: Dict[str, List[Dict[str, Any]]] = {}
+
+                async def _fetch_candles(symbol: str, start_dt: datetime, end_dt: datetime) -> List[Dict[str, Any]]:
+                    key = f"{symbol}|{start_dt.isoformat()}|{end_dt.isoformat()}|{request.timeframe}|{request.data_source}"
+                    if key in candle_cache:
+                        return candle_cache[key]
+                    candles = await data_source.fetch_historical_data(
+                        symbol=symbol,
+                        start_date=start_dt,
+                        end_date=end_dt,
+                        timeframe=request.timeframe
+                    )
+                    candle_cache[key] = candles or []
+                    return candle_cache[key]
+
+                # Build entries from rule mode
+                if request.mode == "rule":
+                    if not request.rule_id:
+                        raise ValueError("rule_id is required for rule mode")
+                    if not request.start_at or not request.end_at:
+                        raise ValueError("start_at and end_at are required for rule mode")
+
+                    start_at = _normalize_dt(_parse_dt(request.start_at, "start_at"))
+                    end_at = _normalize_dt(_parse_dt(request.end_at, "end_at"))
+                    if end_at <= start_at:
+                        raise ValueError("end_at must be later than start_at")
+
+                    rule = self.repository.get_rule(request.rule_id)
+                    if not rule:
+                        raise ValueError(f"Rule with ID {request.rule_id} not found")
+                    rule_to_evaluate = {**rule, **rule['definition']}
+                    rule_engine = RuleEngine()
+
+                    for symbol in symbols:
+                        candles = await _fetch_candles(symbol, start_at, end_at)
+                        if not candles:
+                            continue
+
+                        indicator_engine = IndicatorEngine(timeframe=request.timeframe)
+                        cooldown_seconds = rule_to_evaluate.get('cooldown_sec', 60)
+                        last_signal_ts = None
+
+                        for candle in candles:
+                            ts = _normalize_dt(candle['timestamp'])
+                            ts_unix = ts.timestamp() if isinstance(ts, datetime) else float(ts)
+
+                            candle_completed = indicator_engine.update_candle_data(
+                                symbol=symbol,
+                                open_price=candle['open'],
+                                high=candle['high'],
+                                low=candle['low'],
+                                close=candle['close'],
+                                timestamp=ts_unix
+                            )
+                            if not candle_completed:
+                                continue
+                            if not indicator_engine.is_symbol_ready(symbol):
+                                continue
+                            if last_signal_ts is not None and (ts_unix - last_signal_ts) < cooldown_seconds:
+                                continue
+
+                            indicators = indicator_engine.get_indicators(symbol)
+                            if not indicators:
+                                continue
+
+                            if rule_engine.evaluate(rule_to_evaluate, indicators):
+                                entries.append({
+                                    "symbol": symbol,
+                                    "entry_time": ts if isinstance(ts, datetime) else datetime.fromtimestamp(ts_unix),
+                                    "entry_price": float(candle['close']),
+                                    "source": "rule"
+                                })
+                                last_signal_ts = ts_unix
+
+                # Build entries from manual mode
+                else:
+                    if not request.manual_entries or len(request.manual_entries) == 0:
+                        raise ValueError("manual_entries is required for manual mode")
+
+                    for item in request.manual_entries:
+                        entry_time = _normalize_dt(_parse_dt(item.entry_time, "manual_entries.entry_time"))
+                        entries.append({
+                            "symbol": item.symbol.upper().strip(),
+                            "entry_time": entry_time,
+                            "entry_price": None,
+                            "source": "manual"
+                        })
+
+                # Enrich entries with T+1 ... T+n OHLC
+                rows = []
+                for entry in entries:
+                    symbol = entry["symbol"]
+                    entry_time = _normalize_dt(entry["entry_time"])
+
+                    # pull wider range so we can include next n candles
+                    lookahead_days = 365 if request.timeframe in ('1d',) else 90
+                    candles = await _fetch_candles(
+                        symbol,
+                        entry_time.replace(hour=0, minute=0, second=0, microsecond=0),
+                        entry_time.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=lookahead_days)
+                    )
+                    if not candles:
+                        continue
+
+                    # find first candle >= entry_time
+                    idx = None
+                    for i, c in enumerate(candles):
+                        cts = _normalize_dt(c['timestamp'])
+                        if cts >= entry_time:
+                            idx = i
+                            break
+                    if idx is None:
+                        continue
+
+                    entry_candle = candles[idx]
+                    entry_price = entry["entry_price"] if entry["entry_price"] is not None else float(entry_candle['close'])
+
+                    step_values = {}
+                    for step in range(1, request.n_steps + 1):
+                        ci = idx + step
+                        if ci >= len(candles):
+                            step_values[f"T+{step}"] = None
+                            continue
+                        c = candles[ci]
+                        step_values[f"T+{step}"] = {
+                            "time": _normalize_dt(c['timestamp']).isoformat() if isinstance(c['timestamp'], datetime) else str(c['timestamp']),
+                            "open": float(c['open']),
+                            "high": float(c['high']),
+                            "low": float(c['low']),
+                            "close": float(c['close'])
+                        }
+
+                    rows.append({
+                        "symbol": symbol,
+                        "entry_time": entry_time.isoformat(),
+                        "entry_price": float(entry_price),
+                        "source": entry["source"],
+                        "steps": step_values
+                    })
+
+                return {
+                    "mode": request.mode,
+                    "timeframe": request.timeframe,
+                    "n_steps": request.n_steps,
+                    "row_count": len(rows),
+                    "rows": rows
+                }
+
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(e)
+                )
+            except Exception as e:
+                self.logger.error(f"Backtest screen error: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Backtest screen failed: {str(e)}"
+                )
         
         @self.app.post("/api/backtest/run")
         async def run_backtest(request: BacktestRequest):

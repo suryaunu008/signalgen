@@ -1,420 +1,307 @@
-/**
- * Backtesting UI Module
- * 
- * Handles all UI interactions for backtesting functionality including:
- * - Backtest configuration and submission
- * - Results display and visualization
- * - Backtest history management
- */
-
 class BacktestingUI {
   constructor() {
     this.currentResults = null;
-    this.backtestRuns = [];
+    this.plBasis = 'close';
   }
 
-  /**
-   * Initialize backtesting UI
-   */
   async init() {
-    console.log('Initializing Backtesting UI...');
     this.setupEventListeners();
-    await this.loadBacktestHistory();
+    this.renderTimezoneLabel();
     await this.loadRules();
+    this.onModeChange(document.getElementById('backtest-mode')?.value || 'rule');
   }
 
-  /**
-   * Setup event listeners for backtesting controls
-   */
+  renderTimezoneLabel() {
+    const el = document.getElementById('backtest-timezone-label');
+    if (!el) return;
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local';
+    el.textContent = `Timezone: ${tz} (device local)`;
+  }
+
   setupEventListeners() {
-    // Run backtest button
     const runButton = document.getElementById('run-backtest-btn');
-    if (runButton) {
-      runButton.addEventListener('click', () => this.runBacktest());
-    }
+    if (runButton) runButton.addEventListener('click', () => this.runBacktesting());
 
-    // Data source change
-    const dataSourceSelect = document.getElementById('backtest-data-source');
-    if (dataSourceSelect) {
-      dataSourceSelect.addEventListener('change', (e) => this.onDataSourceChange(e.target.value));
-    }
+    const exportButton = document.getElementById('export-backtest-csv-btn');
+    if (exportButton) exportButton.addEventListener('click', () => this.exportCsv());
 
-    // Backtest mode change
     const modeSelect = document.getElementById('backtest-mode');
-    if (modeSelect) {
-      modeSelect.addEventListener('change', (e) => this.onModeChange(e.target.value));
-    }
+    if (modeSelect) modeSelect.addEventListener('change', (e) => this.onModeChange(e.target.value));
   }
 
-  /**
-   * Load list of trading rules
-   */
+  onModeChange(mode) {
+    const ruleFields = document.getElementById('backtest-rule-mode-fields');
+    const manualFields = document.getElementById('backtest-manual-mode-fields');
+    if (!ruleFields || !manualFields) return;
+
+    if (mode === 'manual') {
+      ruleFields.classList.add('hidden');
+      manualFields.classList.remove('hidden');
+      return;
+    }
+
+    manualFields.classList.add('hidden');
+    ruleFields.classList.remove('hidden');
+  }
+
   async loadRules() {
     try {
       const response = await fetch('/api/rules');
       const rules = await response.json();
-      
-      const ruleSelect = document.getElementById('backtest-rule-select');
-      if (ruleSelect && Array.isArray(rules)) {
-        ruleSelect.innerHTML = '<option value="">Select rule...</option>';
-        rules.forEach(rule => {
-          const option = document.createElement('option');
-          option.value = rule.id;
-          option.textContent = `${rule.name}${rule.is_system ? ' (System)' : ''}`;
-          ruleSelect.appendChild(option);
-        });
-      }
+      const select = document.getElementById('backtest-rule-select');
+      if (!select || !Array.isArray(rules)) return;
+
+      select.innerHTML = '<option value="">Select rule...</option>';
+      rules.forEach((rule) => {
+        const option = document.createElement('option');
+        option.value = rule.id;
+        option.textContent = `${rule.name}${rule.is_system ? ' (System)' : ''}`;
+        select.appendChild(option);
+      });
     } catch (error) {
-      console.error('Error loading rules:', error);
       this.showError('Failed to load rules');
+      console.error(error);
     }
   }
 
-  /**
-   * Run backtest with current configuration
-   */
-  async runBacktest() {
+  parseManualEntries(input) {
+    const lines = input.split('\n').map((v) => v.trim()).filter(Boolean);
+    const entries = [];
+    for (const line of lines) {
+      const parts = line.split(',').map((v) => v.trim());
+      if (parts.length < 2) {
+        throw new Error(`Invalid manual entry line: ${line}`);
+      }
+      entries.push({ symbol: parts[0], entry_time: this.localInputToIso(parts[1]) });
+    }
+    return entries;
+  }
+
+  localInputToIso(value) {
+    // Accepts datetime-local shape (YYYY-MM-DDTHH:mm) and converts from device local time.
+    const dt = new Date(value);
+    if (Number.isNaN(dt.getTime())) {
+      throw new Error(`Invalid datetime value: ${value}`);
+    }
+    return dt.toISOString();
+  }
+
+  async runBacktesting() {
     try {
-      // Get form values
-      const name = document.getElementById('backtest-name')?.value?.trim();
       const mode = document.getElementById('backtest-mode')?.value;
-      const ruleId = document.getElementById('backtest-rule-select')?.value;
-      const symbols = document.getElementById('backtest-symbols')?.value?.trim().split(',').map(s => s.trim());
       const timeframe = document.getElementById('backtest-timeframe')?.value;
-      const startDate = document.getElementById('backtest-start-date')?.value;
-      const endDate = document.getElementById('backtest-end-date')?.value;
+      const nSteps = parseInt(document.getElementById('backtest-n-steps')?.value || '0', 10);
       const dataSource = document.getElementById('backtest-data-source')?.value;
+      const plBasis = document.getElementById('backtest-pl-basis')?.value || 'close';
 
-      // Validate inputs
-      if (!name) {
-        this.showError('Please enter a backtest name');
+      if (!mode || !timeframe || !dataSource || Number.isNaN(nSteps) || nSteps < 1) {
+        this.showError('Invalid input');
         return;
       }
-      if (!mode) {
-        this.showError('Please select backtest mode');
-        return;
-      }
-      if (!ruleId) {
-        this.showError('Please select a rule');
-        return;
-      }
-      if (!symbols || symbols.length === 0) {
-        this.showError('Please enter at least one symbol');
-        return;
-      }
-      if (!startDate || !endDate) {
-        this.showError('Please select date range');
-        return;
+      this.plBasis = plBasis;
+
+      const payload = {
+        mode,
+        timeframe,
+        n_steps: nSteps,
+        data_source: dataSource
+      };
+
+      if (mode === 'rule') {
+        const ruleId = document.getElementById('backtest-rule-select')?.value;
+        const startAt = document.getElementById('backtest-start-at')?.value;
+        const endAt = document.getElementById('backtest-end-at')?.value;
+        const symbolsRaw = document.getElementById('backtest-symbols')?.value?.trim() || '';
+        if (!ruleId || !startAt || !endAt) {
+          this.showError('Rule mode requires: rule, start, end');
+          return;
+        }
+
+        payload.rule_id = parseInt(ruleId, 10);
+        payload.start_at = this.localInputToIso(startAt);
+        payload.end_at = this.localInputToIso(endAt);
+
+        if (symbolsRaw) {
+          payload.symbols = symbolsRaw.split(',').map((s) => s.trim()).filter(Boolean);
+        }
+      } else {
+        const manualRaw = document.getElementById('backtest-manual-entries')?.value || '';
+        payload.manual_entries = this.parseManualEntries(manualRaw);
+        if (payload.manual_entries.length === 0) {
+          this.showError('Manual mode requires at least 1 entry');
+          return;
+        }
       }
 
-      // Show loading
-      this.showLoading('Running backtest...');
-
-      // Submit backtest
-      const response = await fetch('/api/backtest/run', {
+      this.showLoading('Running backtesting...');
+      const response = await fetch('/api/backtest/screen', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name,
-          mode,
-          rule_id: parseInt(ruleId),
-          symbols,
-          timeframe,
-          start_date: startDate,
-          end_date: endDate,
-          data_source: dataSource
-        })
+        body: JSON.stringify(payload)
       });
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Backtest failed');
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.detail || 'Backtesting failed');
       }
 
       const result = await response.json();
-      
+      result.pl_basis = this.plBasis;
+      this.currentResults = result;
+      this.renderResults(result);
       this.hideLoading();
-      this.showSuccess(`Backtest completed! ${result.total_signals} signals generated`);
-      
-      // Load and display results
-      await this.loadBacktestResults(result.backtest_run_id);
-      await this.loadBacktestHistory();
-
+      this.showSuccess(`Completed. Rows: ${result.row_count}`);
     } catch (error) {
       this.hideLoading();
-      this.showError(`Backtest failed: ${error.message}`);
-      console.error('Backtest error:', error);
+      this.showError(`Backtesting failed: ${error.message}`);
+      console.error(error);
     }
   }
 
-  /**
-   * Load backtest results
-   */
-  async loadBacktestResults(runId) {
-    try {
-      const response = await fetch(`/api/backtest/runs/${runId}`);
-      const data = await response.json();
-      
-      this.currentResults = data;
-      this.displayResults(data);
-    } catch (error) {
-      console.error('Error loading backtest results:', error);
-      this.showError('Failed to load backtest results');
+  renderResults(result) {
+    const container = document.getElementById('backtest-results-container');
+    if (!container) return;
+
+    const headers = ['Ticker', 'Entry Time', 'Entry Price'];
+    for (let i = 1; i <= result.n_steps; i += 1) {
+      headers.push(`T+${i}`);
     }
-  }
 
-  /**
-   * Display backtest results
-   */
-  displayResults(results) {
-    const resultsContainer = document.getElementById('backtest-results-container');
-    if (!resultsContainer) return;
+    const thead = `<tr>${headers.map((h, idx) => `<th class="${idx < 3 ? 'sticky z-20 bg-white' : 'bg-slate-100'} px-3 py-3 text-left text-xs font-semibold tracking-wide text-slate-700 uppercase border-b border-slate-200 ${idx === 0 ? 'left-0' : idx === 1 ? 'left-[120px]' : idx === 2 ? 'left-[320px]' : ''}">${h}</th>`).join('')}</tr>`;
 
-    resultsContainer.innerHTML = `
-      <div class="bg-white rounded-lg shadow-md p-6 mb-4">
-        <h3 class="text-lg font-semibold mb-4">Backtest: ${results.name}</h3>
-        
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-          <div class="bg-blue-50 rounded-lg p-4">
-            <div class="text-sm text-gray-600">Total Signals</div>
-            <div class="text-2xl font-bold text-blue-600">${results.total_signals}</div>
-          </div>
-          <div class="bg-green-50 rounded-lg p-4">
-            <div class="text-sm text-gray-600">Symbols Tested</div>
-            <div class="text-2xl font-bold text-green-600">${results.symbols.length}</div>
-          </div>
-          <div class="bg-purple-50 rounded-lg p-4">
-            <div class="text-sm text-gray-600">Timeframe</div>
-            <div class="text-2xl font-bold text-purple-600">${results.timeframe}</div>
-          </div>
-          <div class="bg-orange-50 rounded-lg p-4">
-            <div class="text-sm text-gray-600">Mode</div>
-            <div class="text-2xl font-bold text-orange-600">${results.mode}</div>
-          </div>
+    const rowsHtml = (result.rows || []).map((row) => {
+      const cells = [
+        `<span class="font-semibold text-slate-900">${row.symbol}</span>`,
+        `<span class="text-slate-700">${new Date(row.entry_time).toLocaleString()}</span>`,
+        `<span class="font-semibold text-slate-900">${Number(row.entry_price).toFixed(4)}</span>`
+      ];
+
+      const entryPriceNum = Number(row.entry_price);
+      for (let i = 1; i <= result.n_steps; i += 1) {
+        const step = row.steps?.[`T+${i}`] || null;
+        if (!step) {
+          cells.push('-');
+        } else {
+          const priceField = result.pl_basis || 'close';
+          const basisNum = Number(step[priceField]);
+          const pl = basisNum - entryPriceNum;
+          const plPct = entryPriceNum === 0 ? 0 : (pl / entryPriceNum) * 100;
+          const plClass = pl > 0
+            ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
+            : pl < 0
+              ? 'text-rose-700 bg-rose-50 border-rose-200'
+              : 'text-slate-700 bg-slate-100 border-slate-300';
+          const sign = pl > 0 ? '+' : '';
+          cells.push(
+            `<div class="min-w-[220px] rounded-lg border border-slate-200 bg-white p-2">
+              <div class="mb-1 text-[11px] font-semibold text-slate-500">T+${i}</div>
+              <div class="grid grid-cols-2 gap-x-2 gap-y-1 text-[11px] text-slate-600">
+                <span>O <b class="text-slate-800">${Number(step.open).toFixed(4)}</b></span>
+                <span>H <b class="text-slate-800">${Number(step.high).toFixed(4)}</b></span>
+                <span>L <b class="text-slate-800">${Number(step.low).toFixed(4)}</b></span>
+                <span>C <b class="text-slate-800">${Number(step.close).toFixed(4)}</b></span>
+              </div>
+              <div class="mt-2 text-[11px] text-slate-500">Basis: <b class="text-slate-700 uppercase">${priceField}</b> (${basisNum.toFixed(4)})</div>
+              <div class="mt-2 rounded-md border px-2 py-1 text-xs font-semibold ${plClass}">
+                P/L ${sign}${pl.toFixed(4)} (${sign}${plPct.toFixed(2)}%)
+              </div>
+            </div>`
+          );
+        }
+      }
+
+      return `<tr class="odd:bg-white even:bg-slate-50 hover:bg-blue-50/40">${cells.map((v, idx) => `<td class="${idx < 3 ? 'sticky z-10 bg-white' : ''} px-3 py-2 align-top text-sm border-b border-slate-200 ${idx === 0 ? 'left-0 min-w-[120px]' : idx === 1 ? 'left-[120px] min-w-[200px]' : idx === 2 ? 'left-[320px] min-w-[120px]' : ''}">${v}</td>`).join('')}</tr>`;
+    }).join('');
+
+    container.innerHTML = `
+      <section class="bg-gradient-to-b from-slate-50 to-white rounded-xl border border-slate-200 shadow-sm p-5">
+        <div class="mb-4 flex flex-wrap items-center gap-2">
+          <h3 class="text-lg font-semibold text-slate-900">Result</h3>
+          <span class="rounded-full bg-blue-100 text-blue-800 px-2.5 py-1 text-xs font-semibold">${result.row_count} rows</span>
+          <span class="rounded-full bg-slate-100 text-slate-700 px-2.5 py-1 text-xs font-semibold">Mode ${result.mode}</span>
+          <span class="rounded-full bg-slate-100 text-slate-700 px-2.5 py-1 text-xs font-semibold">T ${result.timeframe}</span>
+          <span class="rounded-full bg-slate-100 text-slate-700 px-2.5 py-1 text-xs font-semibold">n ${result.n_steps}</span>
+          <span class="rounded-full bg-amber-100 text-amber-800 px-2.5 py-1 text-xs font-semibold">P/L basis ${(result.pl_basis || 'close').toUpperCase()}</span>
         </div>
-
-        <div class="mb-4">
-          <h4 class="font-semibold mb-2">Date Range</h4>
-          <p class="text-sm text-gray-600">${results.start_date} to ${results.end_date}</p>
-        </div>
-
-        <div class="mb-4">
-          <h4 class="font-semibold mb-2">Symbols</h4>
-          <div class="flex flex-wrap gap-2">
-            ${results.symbols.map(s => `<span class="px-2 py-1 bg-gray-200 rounded text-sm">${s}</span>`).join('')}
-          </div>
-        </div>
-      </div>
-
-      <div class="bg-white rounded-lg shadow-md p-6">
-        <h3 class="text-lg font-semibold mb-4">Signals (${results.signals.length})</h3>
-        <div class="overflow-x-auto">
-          <table class="min-w-full divide-y divide-gray-200">
-            <thead class="bg-gray-50">
-              <tr>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Time</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Symbol</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Price</th>
-              </tr>
-            </thead>
-            <tbody class="bg-white divide-y divide-gray-200">
-              ${results.signals.map(signal => `
-                <tr class="hover:bg-gray-50">
-                  <td class="px-4 py-3 text-sm">${new Date(signal.timestamp).toLocaleString()}</td>
-                  <td class="px-4 py-3 text-sm font-medium">${signal.symbol}</td>
-                  <td class="px-4 py-3 text-sm">
-                    <span class="px-2 py-1 rounded text-white ${signal.signal_type === 'BUY' ? 'bg-green-500' : 'bg-red-500'}">
-                      ${signal.signal_type}
-                    </span>
-                  </td>
-                  <td class="px-4 py-3 text-sm">$${signal.price.toFixed(2)}</td>
-                </tr>
-              `).join('')}
-            </tbody>
+        <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+          <table class="min-w-full bg-white">
+            <thead>${thead}</thead>
+            <tbody>${rowsHtml || '<tr><td class="px-3 py-4 text-sm text-gray-500" colspan="999">No rows</td></tr>'}</tbody>
           </table>
         </div>
-      </div>
+      </section>
     `;
   }
 
-  /**
-   * Load backtest history
-   */
-  async loadBacktestHistory() {
-    try {
-      const response = await fetch('/api/backtest/runs');
-      const data = await response.json();
-      
-      this.backtestRuns = data.runs;
-      this.displayHistory(data.runs);
-    } catch (error) {
-      console.error('Error loading backtest history:', error);
-    }
-  }
-
-  /**
-   * Display backtest history
-   */
-  displayHistory(runs) {
-    const historyContainer = document.getElementById('backtest-history-list');
-    if (!historyContainer) return;
-
-    if (runs.length === 0) {
-      historyContainer.innerHTML = '<p class="text-gray-500 text-sm">No backtest runs yet</p>';
+  exportCsv() {
+    if (!this.currentResults || !Array.isArray(this.currentResults.rows)) {
+      this.showError('No results available to export');
       return;
     }
 
-    historyContainer.innerHTML = runs.map(run => `
-      <div class="bg-white border border-gray-200 rounded-lg p-4 mb-3 hover:shadow-md transition-shadow">
-        <div class="flex justify-between items-start">
-          <div>
-            <h4 class="font-semibold">${run.name}</h4>
-            <p class="text-sm text-gray-600">${new Date(run.created_at).toLocaleString()}</p>
-            <div class="flex gap-2 mt-2">
-              <span class="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">${run.mode}</span>
-              <span class="px-2 py-1 bg-purple-100 text-purple-800 rounded text-xs">${run.timeframe}</span>
-              <span class="px-2 py-1 bg-green-100 text-green-800 rounded text-xs">${run.total_signals} signals</span>
-            </div>
-          </div>
-          <div class="flex gap-2">
-            <button onclick="backtestingUI.loadBacktestResults(${run.id})" 
-                    class="px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600">
-              View
-            </button>
-            <button onclick="backtestingUI.deleteBacktest(${run.id})" 
-                    class="px-3 py-1 bg-red-500 text-white rounded text-sm hover:bg-red-600">
-              Delete
-            </button>
-          </div>
-        </div>
-      </div>
-    `).join('');
-  }
-
-  /**
-   * Delete backtest
-   */
-  async deleteBacktest(runId) {
-    if (!confirm('Are you sure you want to delete this backtest?')) {
-      return;
+    const result = this.currentResults;
+    const headers = ['Ticker', 'Entry Time', 'Entry Price'];
+    for (let i = 1; i <= result.n_steps; i += 1) {
+      headers.push(`T+${i} OHLC`, `T+${i} P/L`, `T+${i} P/L%`);
     }
 
-    try {
-      const response = await fetch(`/api/backtest/runs/${runId}`, {
-        method: 'DELETE'
-      });
+    const lines = [headers.join(',')];
 
-      if (!response.ok) {
-        throw new Error('Failed to delete backtest');
+    for (const row of result.rows) {
+      const line = [row.symbol, row.entry_time, row.entry_price];
+      const entryPriceNum = Number(row.entry_price);
+      for (let i = 1; i <= result.n_steps; i += 1) {
+        const step = row.steps?.[`T+${i}`] || null;
+        if (!step) {
+          line.push('', '', '');
+        } else {
+          const priceField = result.pl_basis || 'close';
+          const basisNum = Number(step[priceField]);
+          const pl = basisNum - entryPriceNum;
+          const plPct = entryPriceNum === 0 ? 0 : (pl / entryPriceNum) * 100;
+          line.push(
+            `"O:${step.open} H:${step.high} L:${step.low} C:${step.close} BASIS(${priceField.toUpperCase()}):${basisNum}"`,
+            pl.toFixed(6),
+            plPct.toFixed(4)
+          );
+        }
       }
-
-      this.showSuccess('Backtest deleted successfully');
-      await this.loadBacktestHistory();
-      
-      // Clear results if this was the current one
-      if (this.currentResults && this.currentResults.id === runId) {
-        document.getElementById('backtest-results-container').innerHTML = '';
-        this.currentResults = null;
-      }
-    } catch (error) {
-      this.showError(`Failed to delete backtest: ${error.message}`);
-      console.error('Delete error:', error);
+      lines.push(line.join(','));
     }
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `backtest_${Date.now()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   }
 
-  /**
-   * Handle data source change
-   */
-  onDataSourceChange(dataSource) {
-    // Update timeframe options based on data source
-    const timeframeSelect = document.getElementById('backtest-timeframe');
-    if (!timeframeSelect) return;
-
-    // Both support same timeframes for now
-    console.log(`Data source changed to: ${dataSource}`);
-  }
-
-  /**
-   * Handle mode change
-   */
-  onModeChange(mode) {
-    console.log(`Backtest mode changed to: ${mode}`);
-    
-    // Update recommended timeframes based on mode
-    const recommendedNote = document.getElementById('timeframe-recommendation');
-    if (recommendedNote) {
-      if (mode === 'scalping') {
-        recommendedNote.textContent = 'Recommended: 1m, 5m for scalping';
-      } else if (mode === 'swing') {
-        recommendedNote.textContent = 'Recommended: 1h, 4h, 1d for swing trading';
-      }
-    }
-  }
-
-  /**
-   * Show loading indicator
-   */
   showLoading(message) {
     const loadingDiv = document.getElementById('backtest-loading');
-    if (loadingDiv) {
-      loadingDiv.innerHTML = `
-        <div class="flex items-center justify-center p-4 bg-blue-50 rounded-lg">
-          <i class="fas fa-spinner fa-spin mr-2"></i>
-          <span>${message}</span>
-        </div>
-      `;
-      loadingDiv.classList.remove('hidden');
-    }
+    if (!loadingDiv) return;
+    loadingDiv.innerHTML = `<div class="flex items-center justify-center p-4 bg-blue-50 rounded-lg"><i class="fas fa-spinner fa-spin mr-2"></i><span>${message}</span></div>`;
+    loadingDiv.classList.remove('hidden');
   }
 
-  /**
-   * Hide loading indicator
-   */
   hideLoading() {
     const loadingDiv = document.getElementById('backtest-loading');
-    if (loadingDiv) {
-      loadingDiv.classList.add('hidden');
-    }
+    if (loadingDiv) loadingDiv.classList.add('hidden');
   }
 
-  /**
-   * Show success message
-   */
-  showSuccess(message) {
-    this.showMessage(message, 'success');
-  }
+  showSuccess(message) { this.showMessage(message, 'success'); }
+  showError(message) { this.showMessage(message, 'error'); }
 
-  /**
-   * Show error message
-   */
-  showError(message) {
-    this.showMessage(message, 'error');
-  }
-
-  /**
-   * Show message
-   */
   showMessage(message, type = 'info') {
     const messageDiv = document.getElementById('backtest-message');
-    if (messageDiv) {
-      const bgColor = type === 'success' ? 'bg-green-50 text-green-800' : 
-                      type === 'error' ? 'bg-red-50 text-red-800' : 
-                      'bg-blue-50 text-blue-800';
-      
-      messageDiv.innerHTML = `
-        <div class="${bgColor} p-4 rounded-lg mb-4">
-          ${message}
-        </div>
-      `;
-      
-      // Auto-hide after 5 seconds
-      setTimeout(() => {
-        messageDiv.innerHTML = '';
-      }, 5000);
-    }
+    if (!messageDiv) return;
+    const bgColor = type === 'success' ? 'bg-green-50 text-green-800' : type === 'error' ? 'bg-red-50 text-red-800' : 'bg-blue-50 text-blue-800';
+    messageDiv.innerHTML = `<div class="${bgColor} p-4 rounded-lg mb-4">${message}</div>`;
+    setTimeout(() => { messageDiv.innerHTML = ''; }, 5000);
   }
 }
 
-// Create global instance
 const backtestingUI = new BacktestingUI();

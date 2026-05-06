@@ -53,6 +53,15 @@ class YahooDataSource(BaseDataSource):
         '4h': '1h',  # Will aggregate from 1h
         '1d': '1d'
     }
+
+    # Approximate Yahoo retention limits for intraday candles.
+    INTRADAY_RETENTION_DAYS = {
+        '1m': 30,
+        '5m': 60,
+        '15m': 60,
+        '1h': 730,
+        '4h': 730
+    }
     
     def __init__(self):
         """Initialize Yahoo Finance data source."""
@@ -123,14 +132,59 @@ class YahooDataSource(BaseDataSource):
             interval = self.TIMEFRAME_MAP[timeframe]
             
             self.logger.info(f"Fetching {interval} data for {symbol} from Yahoo Finance")
-            
-            # Download data
-            df = ticker.history(
-                start=start_date,
-                end=end_date,
-                interval=interval,
-                auto_adjust=False  # Keep original OHLC without adjustments
-            )
+
+            # Enforce intraday retention windows to avoid Yahoo hard errors.
+            effective_start = start_date
+            retention_days = self.INTRADAY_RETENTION_DAYS.get(timeframe)
+            if retention_days is not None:
+                now_utc = datetime.utcnow()
+                min_allowed = now_utc - timedelta(days=retention_days)
+
+                if end_date <= min_allowed:
+                    self.logger.warning(
+                        f"Yahoo {timeframe} retention limit hit for {symbol}: "
+                        f"requested end {end_date.isoformat()} is older than "
+                        f"{min_allowed.isoformat()} (last ~{retention_days} days only)"
+                    )
+                    return []
+
+                effective_start = max(start_date, min_allowed)
+                if effective_start > start_date:
+                    self.logger.warning(
+                        f"Clamping Yahoo {timeframe} start for {symbol} from {start_date.isoformat()} "
+                        f"to {effective_start.isoformat()} due to ~{retention_days}-day retention"
+                    )
+
+            # 1m: chunk requests to avoid per-request length limits.
+            if timeframe == '1m':
+                chunk_days = 7
+                all_chunks = []
+                current_start = effective_start
+                while current_start < end_date:
+                    current_end = min(current_start + timedelta(days=chunk_days), end_date)
+                    chunk_df = ticker.history(
+                        start=current_start,
+                        end=current_end,
+                        interval=interval,
+                        auto_adjust=False
+                    )
+                    if not chunk_df.empty:
+                        all_chunks.append(chunk_df)
+                    current_start = current_end
+
+                if all_chunks:
+                    df = pd.concat(all_chunks).sort_index()
+                    df = df[~df.index.duplicated(keep='first')]
+                else:
+                    df = pd.DataFrame()
+            else:
+                # Download data (single request for non-1m intervals)
+                df = ticker.history(
+                    start=effective_start,
+                    end=end_date,
+                    interval=interval,
+                    auto_adjust=False  # Keep original OHLC without adjustments
+                )
             
             if df.empty:
                 self.logger.warning(f"No data returned for {symbol}")
@@ -171,7 +225,7 @@ class YahooDataSource(BaseDataSource):
         """
         # Resample to 4-hour intervals
         # Align to market open (9:30 AM ET)
-        aggregated = df.resample('4H', label='left', closed='left').agg({
+        aggregated = df.resample('4h', label='left', closed='left').agg({
             'Open': 'first',
             'High': 'max',
             'Low': 'min',
