@@ -103,6 +103,20 @@ class RuleEngine:
     
     # Supported logic operators
     SUPPORTED_LOGIC = {"AND"}
+
+    @classmethod
+    def get_crossable_operands(cls) -> List[str]:
+        """
+        Return operands that have matching previous values for crossover checks.
+        """
+        return sorted(
+            operand for operand in cls.SUPPORTED_OPERANDS
+            if (
+                isinstance(operand, str)
+                and not operand.endswith("_PREV")
+                and f"{operand}_PREV" in cls.SUPPORTED_OPERANDS
+            )
+        )
     
     def __init__(self):
         """Initialize the rule engine with supported operators."""
@@ -267,6 +281,17 @@ class RuleEngine:
             operator = condition.get("op")
             if operator not in self.SUPPORTED_OPERATORS:
                 raise RuleValidationError(f"Unsupported operator: {operator}")
+
+            if operator in {"CROSS_UP", "CROSS_DOWN"}:
+                crossable_operands = set(self.get_crossable_operands())
+                if left_operand not in crossable_operands:
+                    raise RuleValidationError(
+                        f"{operator} left operand must have a previous value: {left_operand}"
+                    )
+                if right_operand not in crossable_operands:
+                    raise RuleValidationError(
+                        f"{operator} right operand must have a previous value: {right_operand}"
+                    )
         
         # Validate cooldown_sec if present
         if "cooldown_sec" in rule:

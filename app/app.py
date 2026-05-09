@@ -45,6 +45,7 @@ from pathlib import Path
 from .storage.sqlite_repo import SQLiteRepository
 from .ws.broadcaster import SocketIOBroadcaster
 from .engines.scalping_engine import ScalpingEngine
+from .core.rule_engine import RuleEngine, RuleValidationError
 
 # Pydantic models for API requests/responses
 class RuleCreate(BaseModel):
@@ -248,6 +249,7 @@ class SignalGenApp:
         self.templates = Jinja2Templates(directory=str(templates_dir)) if templates_dir.exists() else None
         
         self.repository = SQLiteRepository(db_path)
+        self.rule_engine = RuleEngine()
         
         # Initialize database schema and default data
         # Must be done before accessing settings or creating engine
@@ -286,6 +288,32 @@ class SignalGenApp:
         
         # Log startup
         self.logger.info("SignalGen application initialized")
+
+    def _normalize_rule_for_validation(
+        self,
+        name: str,
+        definition: Dict[str, Any],
+        rule_id: int = 0,
+        rule_type: str = "custom"
+    ) -> Dict[str, Any]:
+        """Build the full rule shape expected by RuleEngine validation."""
+        return {
+            "id": rule_id,
+            "name": name,
+            "type": rule_type,
+            **definition
+        }
+
+    def _validate_rule_definition(
+        self,
+        name: str,
+        definition: Dict[str, Any],
+        rule_id: int = 0,
+        rule_type: str = "custom"
+    ) -> None:
+        """Validate a stored rule definition before it reaches the database."""
+        rule = self._normalize_rule_for_validation(name, definition, rule_id, rule_type)
+        self.rule_engine.validate_rule(rule)
     
     def _register_routes(self) -> None:
         """Register all API routes."""
@@ -441,6 +469,54 @@ class SignalGenApp:
             except Exception as e:
                 self.logger.error(f"Error getting rules: {e}")
                 raise HTTPException(status_code=500, detail="Internal server error")
+
+        @self.app.get("/api/rules/schema", response_model=Dict)
+        def get_rule_schema():
+            """Get supported rule operands, operators, and logic values."""
+            try:
+                operand_groups = {
+                    "Price & Candle": ["PRICE", "PREV_CLOSE", "PREV_OPEN"],
+                    "Simple Moving Averages": [
+                        "MA20", "MA50", "MA100", "MA200",
+                        "MA20_PREV", "MA50_PREV", "MA100_PREV", "MA200_PREV",
+                    ],
+                    "Exponential Moving Averages": [
+                        "EMA6", "EMA9", "EMA10", "EMA13", "EMA20", "EMA21", "EMA34", "EMA50",
+                        "EMA6_PREV", "EMA9_PREV", "EMA10_PREV", "EMA13_PREV",
+                        "EMA20_PREV", "EMA21_PREV", "EMA34_PREV", "EMA50_PREV",
+                    ],
+                    "MACD": [
+                        "MACD", "MACD_SIGNAL", "MACD_HIST",
+                        "MACD_PREV", "MACD_SIGNAL_PREV", "MACD_HIST_PREV",
+                    ],
+                    "RSI": ["RSI14", "RSI14_PREV"],
+                    "ADX": ["ADX5", "ADX5_PREV"],
+                    "Bollinger Bands": [
+                        "BB_UPPER", "BB_MIDDLE", "BB_LOWER", "BB_WIDTH",
+                        "BB_UPPER_PREV", "BB_MIDDLE_PREV", "BB_LOWER_PREV",
+                    ],
+                    "Volume": ["VOLUME", "SMA_VOLUME_20", "REL_VOLUME_20"],
+                    "Calculated Metrics": ["PRICE_EMA20_DIFF_PCT"],
+                }
+                supported = self.rule_engine.SUPPORTED_OPERANDS
+                filtered_groups = {
+                    group: [operand for operand in operands if operand in supported]
+                    for group, operands in operand_groups.items()
+                }
+                return JSONResponse(content={
+                    "operand_groups": filtered_groups,
+                    "operands": sorted(supported),
+                    "operators": [
+                        operator for operator in [">", "<", ">=", "<=", "CROSS_UP", "CROSS_DOWN"]
+                        if operator in self.rule_engine.SUPPORTED_OPERATORS
+                    ],
+                    "logic": sorted(self.rule_engine.SUPPORTED_LOGIC),
+                    "cross_operators": ["CROSS_UP", "CROSS_DOWN"],
+                    "crossable_operands": self.rule_engine.get_crossable_operands(),
+                })
+            except Exception as e:
+                self.logger.error(f"Error getting rule schema: {e}")
+                raise HTTPException(status_code=500, detail="Internal server error")
         
         @self.app.get("/api/rules/{rule_id}", response_model=Dict)
         def get_rule(rule_id: int):
@@ -460,6 +536,7 @@ class SignalGenApp:
         def create_rule(rule: RuleCreate):
             """Create a new trading rule."""
             try:
+                self._validate_rule_definition(rule.name, rule.definition)
                 rule_id = self.repository.create_rule(
                     name=rule.name,
                     rule_type="custom",
@@ -475,6 +552,8 @@ class SignalGenApp:
                 # )
                 
                 return JSONResponse(content=created_rule, status_code=201)
+            except RuleValidationError as e:
+                raise HTTPException(status_code=422, detail=str(e))
             except Exception as e:
                 self.logger.error(f"Error creating rule: {e}")
                 raise HTTPException(status_code=500, detail="Internal server error")
@@ -483,6 +562,19 @@ class SignalGenApp:
         def update_rule(rule_id: int, rule: RuleUpdate):
             """Update an existing rule."""
             try:
+                existing_rule = self.repository.get_rule(rule_id)
+                if not existing_rule or existing_rule.get('is_system'):
+                    raise HTTPException(status_code=404, detail="Rule not found or is system rule")
+
+                next_name = rule.name if rule.name is not None else existing_rule['name']
+                next_definition = rule.definition if rule.definition is not None else existing_rule['definition']
+                self._validate_rule_definition(
+                    next_name,
+                    next_definition,
+                    rule_id=rule_id,
+                    rule_type=existing_rule.get('type', 'custom')
+                )
+
                 success = self.repository.update_rule(
                     rule_id=rule_id,
                     name=rule.name,
@@ -503,6 +595,8 @@ class SignalGenApp:
                 return JSONResponse(content=updated_rule)
             except HTTPException:
                 raise
+            except RuleValidationError as e:
+                raise HTTPException(status_code=422, detail=str(e))
             except Exception as e:
                 self.logger.error(f"Error updating rule {rule_id}: {e}")
                 raise HTTPException(status_code=500, detail="Internal server error")
@@ -1127,6 +1221,72 @@ class SignalGenApp:
                         return value.astimezone(timezone.utc).replace(tzinfo=None)
                     return value
 
+                def _utc_iso(value: datetime) -> str:
+                    if value.tzinfo is not None:
+                        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+                    return value.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+
+                def _wall_clock_iso(value: datetime) -> str:
+                    if value.tzinfo is not None:
+                        value = value.replace(tzinfo=None)
+                    return value.isoformat()
+
+                def _is_numeric_operand(value: Any) -> bool:
+                    if isinstance(value, (int, float)):
+                        return True
+                    if isinstance(value, str):
+                        try:
+                            float(value)
+                            return True
+                        except ValueError:
+                            return False
+                    return False
+
+                def _required_rule_operands(rule_def: Dict[str, Any]) -> set:
+                    required = set()
+                    cross_ops = {"CROSS_UP", "CROSS_DOWN"}
+                    for condition in rule_def.get("conditions", []):
+                        op = condition.get("op")
+                        for side in ("left", "right"):
+                            operand = condition.get(side)
+                            if isinstance(operand, str) and not _is_numeric_operand(operand):
+                                required.add(operand)
+                                if op in cross_ops and not operand.endswith("_PREV"):
+                                    required.add(f"{operand}_PREV")
+                    return required
+
+                def _has_required_indicators(indicators: Dict[str, Any], required: set) -> bool:
+                    return all(operand in indicators for operand in required)
+
+                def _rule_warmup_start(start_dt: datetime, rule_def: Dict[str, Any], timeframe: str) -> datetime:
+                    period_by_prefix = {
+                        "MA20": 20, "MA50": 50, "MA100": 100, "MA200": 200,
+                        "EMA6": 6, "EMA9": 9, "EMA10": 10, "EMA13": 13,
+                        "EMA20": 20, "EMA21": 21, "EMA34": 34, "EMA50": 50,
+                        "MACD": 35, "MACD_SIGNAL": 35, "MACD_HIST": 35,
+                        "RSI14": 15, "ADX5": 6,
+                        "BB_UPPER": 20, "BB_MIDDLE": 20, "BB_LOWER": 20, "BB_WIDTH": 20,
+                        "SMA_VOLUME_20": 20, "REL_VOLUME_20": 20,
+                        "PRICE_EMA20_DIFF_PCT": 20,
+                    }
+                    required = _required_rule_operands(rule_def)
+                    warmup_bars = 0
+                    for operand in required:
+                        base_operand = operand[:-5] if operand.endswith("_PREV") else operand
+                        operand_bars = period_by_prefix.get(base_operand, 1)
+                        if operand.endswith("_PREV"):
+                            operand_bars += 1
+                        warmup_bars = max(warmup_bars, operand_bars)
+
+                    if timeframe == "1d":
+                        warmup_days = (warmup_bars * 2) + 10
+                    elif timeframe in {"1h", "4h"}:
+                        warmup_days = max(14, warmup_bars // 4 + 7)
+                    else:
+                        warmup_days = max(7, warmup_bars // 20 + 3)
+
+                    return start_dt - timedelta(days=warmup_days)
+
                 # Create data source
                 if request.data_source == 'ibkr':
                     data_source = IBKRDataSource()
@@ -1173,9 +1333,11 @@ class SignalGenApp:
                         raise ValueError(f"Rule with ID {request.rule_id} not found")
                     rule_to_evaluate = {**rule, **rule['definition']}
                     rule_engine = RuleEngine()
+                    required_operands = _required_rule_operands(rule_to_evaluate)
+                    warmup_start_at = _rule_warmup_start(start_at, rule_to_evaluate, request.timeframe)
 
                     for symbol in symbols:
-                        candles = await _fetch_candles(symbol, start_at, end_at)
+                        candles = await _fetch_candles(symbol, warmup_start_at, end_at)
                         if not candles:
                             continue
 
@@ -1184,7 +1346,8 @@ class SignalGenApp:
                         last_signal_ts = None
 
                         for candle in candles:
-                            ts = _normalize_dt(candle['timestamp'])
+                            raw_ts = candle['timestamp']
+                            ts = _normalize_dt(raw_ts)
                             ts_unix = ts.timestamp() if isinstance(ts, datetime) else float(ts)
 
                             candle_completed = indicator_engine.update_candle_data(
@@ -1193,11 +1356,15 @@ class SignalGenApp:
                                 high=candle['high'],
                                 low=candle['low'],
                                 close=candle['close'],
-                                timestamp=ts_unix
+                                timestamp=ts_unix,
+                                volume=candle.get('volume', 0),
+                                suppress_warnings=True
                             )
                             if not candle_completed:
                                 continue
                             if not indicator_engine.is_symbol_ready(symbol):
+                                continue
+                            if ts < start_at:
                                 continue
                             if last_signal_ts is not None and (ts_unix - last_signal_ts) < cooldown_seconds:
                                 continue
@@ -1205,11 +1372,14 @@ class SignalGenApp:
                             indicators = indicator_engine.get_indicators(symbol)
                             if not indicators:
                                 continue
+                            if not _has_required_indicators(indicators, required_operands):
+                                continue
 
                             if rule_engine.evaluate(rule_to_evaluate, indicators):
                                 entries.append({
                                     "symbol": symbol,
                                     "entry_time": ts if isinstance(ts, datetime) else datetime.fromtimestamp(ts_unix),
+                                    "display_time": _wall_clock_iso(raw_ts) if isinstance(raw_ts, datetime) else None,
                                     "entry_price": float(candle['close']),
                                     "source": "rule"
                                 })
@@ -1225,6 +1395,7 @@ class SignalGenApp:
                         entries.append({
                             "symbol": item.symbol.upper().strip(),
                             "entry_time": entry_time,
+                            "display_time": None,
                             "entry_price": None,
                             "source": "manual"
                         })
@@ -1266,7 +1437,7 @@ class SignalGenApp:
                             continue
                         c = candles[ci]
                         step_values[f"T+{step}"] = {
-                            "time": _normalize_dt(c['timestamp']).isoformat() if isinstance(c['timestamp'], datetime) else str(c['timestamp']),
+                            "time": _wall_clock_iso(c['timestamp']) if isinstance(c['timestamp'], datetime) else str(c['timestamp']),
                             "open": float(c['open']),
                             "high": float(c['high']),
                             "low": float(c['low']),
@@ -1275,7 +1446,7 @@ class SignalGenApp:
 
                     rows.append({
                         "symbol": symbol,
-                        "entry_time": entry_time.isoformat(),
+                        "entry_time": entry.get("display_time") or _utc_iso(entry_time),
                         "entry_price": float(entry_price),
                         "source": entry["source"],
                         "steps": step_values

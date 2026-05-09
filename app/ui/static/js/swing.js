@@ -245,6 +245,22 @@ class SwingTradingUI {
     }
   }
 
+  formatDate(value) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return '-';
+    return date.toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
+    });
+  }
+
+  formatDateTime(value) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return '-';
+    return `${this.formatDate(date)} ${date.toLocaleTimeString()}`;
+  }
+
   cancelScreening() {
     if (this.activeScreeningController) {
       this.activeScreeningController.abort();
@@ -566,7 +582,7 @@ class SwingTradingUI {
 
       const timestamp = document.createElement('td');
       timestamp.className = 'px-4 py-3 text-sm';
-      timestamp.textContent = r.timestamp ? new Date(r.timestamp).toLocaleString() : '-';
+      timestamp.textContent = r.timestamp ? this.formatDateTime(r.timestamp) : '-';
 
       const status = document.createElement('td');
       status.className = 'px-4 py-3 text-sm';

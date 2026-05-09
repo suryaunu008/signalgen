@@ -46,6 +46,7 @@ class SignalGenApp {
     this.engineRunning = false;
     this.currentWatchlist = null;
     this.currentRule = null;
+    this.ruleSchema = null;
     this.watchlistSymbols = [];
     this.signals = [];
     this.maxSignals = 50; // Keep only last 50 signals in UI
@@ -110,6 +111,7 @@ class SignalGenApp {
       const initialConditionRow = document.querySelector(".condition-row");
       if (initialConditionRow) {
         this.attachConditionRowListeners(initialConditionRow);
+        this.syncConditionRowForOperator(initialConditionRow);
       }
 
       console.log("SignalGen application initialized successfully");
@@ -129,6 +131,9 @@ class SignalGenApp {
       // Load system status
       const status = await API.getSystemStatus();
       this.updateEngineStatus(status.engine);
+
+      // Load rule builder metadata before rendering rule controls
+      await this.loadRuleSchema();
 
       // Load rules
       const rules = await API.getAllRules();
@@ -155,6 +160,130 @@ class SignalGenApp {
       console.error("Failed to load initial data:", error);
       throw error;
     }
+  }
+
+  async loadRuleSchema() {
+    try {
+      this.ruleSchema = await API.getRuleSchema();
+      this.applyRuleSchemaToBuilder();
+    } catch (error) {
+      console.error("Failed to load rule schema:", error);
+      this.ruleSchema = null;
+      this.showToast("Using fallback rule builder metadata", "warning");
+    }
+  }
+
+  applyRuleSchemaToBuilder() {
+    const logicSelect = document.getElementById("rule-logic");
+    if (logicSelect) {
+      logicSelect.innerHTML = this.getRuleLogicOptionsHTML();
+    }
+
+    document.querySelectorAll(".condition-row").forEach((row) => {
+      this.populateConditionRowControls(row);
+    });
+  }
+
+  populateConditionRowControls(row) {
+    const leftSelect = row.querySelector(".condition-left");
+    const opSelect = row.querySelector(".condition-op");
+    const rightSelect = row.querySelector(".condition-right");
+
+    if (leftSelect) {
+      const currentValue = leftSelect.value;
+      leftSelect.innerHTML = this.getOperandOptionsHTML();
+      if (this.optionExists(leftSelect, currentValue)) {
+        leftSelect.value = currentValue;
+      }
+    }
+
+    if (opSelect) {
+      const currentValue = opSelect.value;
+      opSelect.innerHTML = this.getOperatorOptionsHTML();
+      if (this.optionExists(opSelect, currentValue)) {
+        opSelect.value = currentValue;
+      }
+    }
+
+    if (rightSelect) {
+      const currentValue = rightSelect.value;
+      rightSelect.innerHTML = this.getOperandOptionsHTML();
+      if (this.optionExists(rightSelect, currentValue)) {
+        rightSelect.value = currentValue;
+      }
+    }
+
+    this.syncConditionRowForOperator(row);
+  }
+
+  optionExists(select, value) {
+    return Array.from(select.options).some((option) => option.value === value);
+  }
+
+  getRuleLogicOptionsHTML() {
+    const logic = this.ruleSchema?.logic || ["AND"];
+    return logic.map((value) => `<option value="${this.escapeHtml(value)}">${this.escapeHtml(value)}</option>`).join("");
+  }
+
+  getOperatorOptionsHTML() {
+    const operators = this.ruleSchema?.operators || [">", "<", ">=", "<=", "CROSS_UP", "CROSS_DOWN"];
+    return operators.map((value) => `<option value="${this.escapeHtml(value)}">${this.escapeHtml(value)}</option>`).join("");
+  }
+
+  getOperandOptionsHTML() {
+    const fallbackGroups = {
+      "Price & Candle": ["PRICE", "PREV_CLOSE", "PREV_OPEN"],
+      "Simple Moving Averages": ["MA20", "MA50", "MA100", "MA200"],
+      "Exponential Moving Averages": ["EMA6", "EMA9", "EMA10", "EMA13", "EMA20", "EMA21", "EMA34", "EMA50"],
+      MACD: ["MACD", "MACD_SIGNAL", "MACD_HIST", "MACD_HIST_PREV"],
+      RSI: ["RSI14", "RSI14_PREV"],
+      ADX: ["ADX5", "ADX5_PREV"],
+      "Bollinger Bands": ["BB_UPPER", "BB_MIDDLE", "BB_LOWER", "BB_WIDTH"],
+      "Calculated Metrics": ["PRICE_EMA20_DIFF_PCT"],
+    };
+    const groups = this.ruleSchema?.operand_groups || fallbackGroups;
+    const groupHtml = Object.entries(groups)
+      .filter(([, operands]) => operands && operands.length)
+      .map(([label, operands]) => {
+        const options = operands
+          .map((operand) => `<option value="${this.escapeHtml(operand)}">${this.escapeHtml(operand)}</option>`)
+          .join("");
+        return `<optgroup label="${this.escapeHtml(label)}">${options}</optgroup>`;
+      })
+      .join("");
+
+    return `${groupHtml}<optgroup label="Numeric Value"><option value="_CUSTOM_">Custom Number...</option></optgroup>`;
+  }
+
+  escapeHtml(value) {
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  formatDate(value) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return "Unknown date";
+    return date.toLocaleDateString("en-GB", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    });
+  }
+
+  formatTime(value) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return "Unknown time";
+    return date.toLocaleTimeString();
+  }
+
+  formatDateTime(value) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return "Unknown";
+    return `${this.formatDate(date)} ${this.formatTime(date)}`;
   }
 
   /**
@@ -630,10 +759,10 @@ class SignalGenApp {
     const signalTime = signal.time || signal.timestamp;
     const signalDate = signalTime ? new Date(signalTime) : null;
     const dateDisplay = signalDate
-      ? signalDate.toLocaleDateString()
+      ? this.formatDate(signalDate)
       : "Unknown date";
     const timeDisplay = signalDate
-      ? signalDate.toLocaleTimeString()
+      ? this.formatTime(signalDate)
       : "Unknown time";
 
     signalElement.innerHTML = `
@@ -970,6 +1099,22 @@ class SignalGenApp {
           return;
         }
 
+        if (this.isCrossOperator(op)) {
+          const crossable = new Set(this.getCrossableOperands());
+          if (typeof left === "number" || !crossable.has(left)) {
+            validationErrors.push(
+              `Condition ${index + 1} left side: ${op} requires an indicator with previous values`
+            );
+            return;
+          }
+          if (typeof right === "number" || !crossable.has(right)) {
+            validationErrors.push(
+              `Condition ${index + 1} right side: ${op} requires an indicator with previous values`
+            );
+            return;
+          }
+        }
+
         conditions.push({ left, op, right });
       });
 
@@ -1041,6 +1186,7 @@ class SignalGenApp {
       const newRow = container.querySelector(".condition-row");
       if (newRow) {
         this.attachConditionRowListeners(newRow);
+        this.syncConditionRowForOperator(newRow);
       }
     }, 0);
   }
@@ -1052,110 +1198,13 @@ class SignalGenApp {
     return `
       <div class="condition-row flex space-x-2">
         <select class="condition-left flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-          <optgroup label="Price & Candle">
-            <option value="PRICE">PRICE</option>
-            <option value="PREV_CLOSE">PREV_CLOSE</option>
-            <option value="PREV_OPEN">PREV_OPEN</option>
-          </optgroup>
-          <optgroup label="Simple Moving Averages">
-            <option value="MA20">MA20</option>
-            <option value="MA50">MA50</option>
-            <option value="MA100">MA100</option>
-            <option value="MA200">MA200</option>
-          </optgroup>
-          <optgroup label="Exponential Moving Averages">
-            <option value="EMA6">EMA6</option>
-            <option value="EMA9">EMA9</option>
-            <option value="EMA10">EMA10</option>
-            <option value="EMA13">EMA13</option>
-            <option value="EMA20">EMA20</option>
-            <option value="EMA21">EMA21</option>
-            <option value="EMA34">EMA34</option>
-            <option value="EMA50">EMA50</option>
-          </optgroup>
-          <optgroup label="MACD">
-            <option value="MACD">MACD</option>
-            <option value="MACD_SIGNAL">MACD_SIGNAL</option>
-            <option value="MACD_HIST">MACD_HIST</option>
-            <option value="MACD_HIST_PREV">MACD_HIST_PREV</option>
-          </optgroup>
-          <optgroup label="RSI">
-            <option value="RSI14">RSI14</option>
-            <option value="RSI14_PREV">RSI14_PREV</option>
-          </optgroup>
-          <optgroup label="ADX">
-            <option value="ADX5">ADX5</option>
-            <option value="ADX5_PREV">ADX5_PREV</option>
-          </optgroup>
-          <optgroup label="Bollinger Bands">
-            <option value="BB_UPPER">BB_UPPER</option>
-            <option value="BB_MIDDLE">BB_MIDDLE</option>
-            <option value="BB_LOWER">BB_LOWER</option>
-            <option value="BB_WIDTH">BB_WIDTH</option>
-          </optgroup>
-          <optgroup label="Calculated Metrics">
-            <option value="PRICE_EMA20_DIFF_PCT">PRICE_EMA20_DIFF_PCT</option>
-          </optgroup>
-          <optgroup label="Numeric Value">
-            <option value="_CUSTOM_">Custom Number...</option>
-          </optgroup>
+          ${this.getOperandOptionsHTML()}
         </select>
         <select class="condition-op px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-          <option value=">">></option>
-          <option value="<"><</option>
-          <option value=">=">>=</option>
-          <option value="<="><=</option>
-          <option value="CROSS_UP">CROSS_UP</option>
-          <option value="CROSS_DOWN">CROSS_DOWN</option>
+          ${this.getOperatorOptionsHTML()}
         </select>
         <select class="condition-right flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-          <optgroup label="Price & Candle">
-            <option value="PRICE">PRICE</option>
-            <option value="PREV_CLOSE">PREV_CLOSE</option>
-            <option value="PREV_OPEN">PREV_OPEN</option>
-          </optgroup>
-          <optgroup label="Simple Moving Averages">
-            <option value="MA20">MA20</option>
-            <option value="MA50">MA50</option>
-            <option value="MA100">MA100</option>
-            <option value="MA200">MA200</option>
-          </optgroup>
-          <optgroup label="Exponential Moving Averages">
-            <option value="EMA6">EMA6</option>
-            <option value="EMA9">EMA9</option>
-            <option value="EMA10">EMA10</option>
-            <option value="EMA13">EMA13</option>
-            <option value="EMA20">EMA20</option>
-            <option value="EMA21">EMA21</option>
-            <option value="EMA34">EMA34</option>
-            <option value="EMA50">EMA50</option>
-          </optgroup>
-          <optgroup label="MACD">
-            <option value="MACD">MACD</option>
-            <option value="MACD_SIGNAL">MACD_SIGNAL</option>
-            <option value="MACD_HIST">MACD_HIST</option>
-            <option value="MACD_HIST_PREV">MACD_HIST_PREV</option>
-          </optgroup>
-          <optgroup label="RSI">
-            <option value="RSI14">RSI14</option>
-            <option value="RSI14_PREV">RSI14_PREV</option>
-          </optgroup>
-          <optgroup label="ADX">
-            <option value="ADX5">ADX5</option>
-            <option value="ADX5_PREV">ADX5_PREV</option>
-          </optgroup>
-          <optgroup label="Bollinger Bands">
-            <option value="BB_UPPER">BB_UPPER</option>
-            <option value="BB_MIDDLE">BB_MIDDLE</option>
-            <option value="BB_LOWER">BB_LOWER</option>
-            <option value="BB_WIDTH">BB_WIDTH</option>
-          </optgroup>
-          <optgroup label="Calculated Metrics">
-            <option value="PRICE_EMA20_DIFF_PCT">PRICE_EMA20_DIFF_PCT</option>
-          </optgroup>
-          <optgroup label="Numeric Value">
-            <option value="_CUSTOM_">Custom Number...</option>
-          </optgroup>
+          ${this.getOperandOptionsHTML()}
         </select>
         <button type="button" class="remove-condition px-3 py-2 bg-red-500 text-white rounded-md hover:bg-red-600 transition-colors">
           <i class="fas fa-trash"></i>
@@ -1170,12 +1219,14 @@ class SignalGenApp {
   attachConditionRowListeners(row) {
     console.log("DEBUG: attachConditionRowListeners called for row:", row);
     const leftSelect = row.querySelector(".condition-left");
+    const opSelect = row.querySelector(".condition-op");
     const rightSelect = row.querySelector(".condition-right");
 
     console.log("DEBUG: leftSelect found:", !!leftSelect);
+    console.log("DEBUG: opSelect found:", !!opSelect);
     console.log("DEBUG: rightSelect found:", !!rightSelect);
 
-    if (!leftSelect || !rightSelect) {
+    if (!leftSelect || !opSelect || !rightSelect) {
       console.error("DEBUG: Could not find select elements in condition row");
       return;
     }
@@ -1192,6 +1243,11 @@ class SignalGenApp {
         console.log("DEBUG: Calling hideCustomInput for left side");
         this.hideCustomInput(row, "left");
       }
+      this.syncConditionRowForOperator(row);
+    });
+
+    opSelect.addEventListener("change", () => {
+      this.syncConditionRowForOperator(row);
     });
 
     rightSelect.addEventListener("change", (e) => {
@@ -1206,9 +1262,74 @@ class SignalGenApp {
         console.log("DEBUG: Calling hideCustomInput for right side");
         this.hideCustomInput(row, "right");
       }
+      this.syncConditionRowForOperator(row);
     });
 
     console.log("DEBUG: Event listeners attached successfully");
+  }
+
+  isCrossOperator(operator) {
+    const crossOperators = this.ruleSchema?.cross_operators || ["CROSS_UP", "CROSS_DOWN"];
+    return crossOperators.includes(operator);
+  }
+
+  getCrossableOperands() {
+    return this.ruleSchema?.crossable_operands || [
+      "ADX5",
+      "BB_LOWER",
+      "BB_MIDDLE",
+      "BB_UPPER",
+      "EMA6",
+      "EMA9",
+      "EMA10",
+      "EMA13",
+      "EMA20",
+      "EMA21",
+      "EMA34",
+      "EMA50",
+      "MA20",
+      "MA50",
+      "MA100",
+      "MA200",
+      "MACD",
+      "MACD_HIST",
+      "MACD_SIGNAL",
+      "RSI14",
+    ];
+  }
+
+  syncConditionRowForOperator(row) {
+    const opSelect = row.querySelector(".condition-op");
+    const leftSelect = row.querySelector(".condition-left");
+    const rightSelect = row.querySelector(".condition-right");
+    if (!opSelect || !leftSelect || !rightSelect) {
+      return;
+    }
+
+    const crossMode = this.isCrossOperator(opSelect.value);
+    const crossable = new Set(this.getCrossableOperands());
+
+    ["left", "right"].forEach((side) => {
+      const select = row.querySelector(`.condition-${side}`);
+      if (!select) {
+        return;
+      }
+
+      if (crossMode && select.value === "_CUSTOM_") {
+        this.switchToDropdown(row, side);
+      }
+
+      Array.from(select.options).forEach((option) => {
+        option.disabled = crossMode && !crossable.has(option.value);
+      });
+
+      if (crossMode && !crossable.has(select.value)) {
+        const firstCrossable = Array.from(select.options).find((option) => crossable.has(option.value));
+        if (firstCrossable) {
+          select.value = firstCrossable.value;
+        }
+      }
+    });
   }
 
   /**
@@ -1484,6 +1605,7 @@ class SignalGenApp {
     // Use setTimeout to ensure DOM is fully updated before attaching listeners
     setTimeout(() => {
       this.attachConditionRowListeners(actualRow);
+      this.syncConditionRowForOperator(actualRow);
       console.log("DEBUG: Event listeners attached to new row");
     }, 0);
   }
@@ -1999,9 +2121,7 @@ class SignalGenApp {
         <span class="change-amount">${Math.abs(change).toFixed(2)}</span>
         <span class="change-percent">(${changePercent}%)</span>
       </td>
-      <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${new Date(
-        timestamp
-      ).toLocaleTimeString()}</td>
+      <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${this.formatDateTime(timestamp)}</td>
     `;
 
     tableBody.appendChild(row);
@@ -2051,7 +2171,7 @@ class SignalGenApp {
 
     // Update timestamp
     const timestampCell = row.children[3];
-    timestampCell.textContent = new Date(timestamp).toLocaleTimeString();
+    timestampCell.textContent = this.formatDateTime(timestamp);
   }
 
   /**
@@ -2113,8 +2233,8 @@ class SignalGenApp {
       ).textContent = `${rule.definition.cooldown_sec} seconds`;
 
       // Format dates
-      const createdDate = new Date(rule.created_at).toLocaleString();
-      const updatedDate = new Date(rule.updated_at).toLocaleString();
+      const createdDate = this.formatDateTime(rule.created_at);
+      const updatedDate = this.formatDateTime(rule.updated_at);
       document.getElementById("modal-rule-created").textContent = createdDate;
       document.getElementById("modal-rule-updated").textContent = updatedDate;
 
@@ -2186,10 +2306,10 @@ class SignalGenApp {
         "signal-modal-price"
       ).textContent = `$${signal.price}`;
       document.getElementById("signal-modal-date").textContent = signalDate
-        ? signalDate.toLocaleDateString()
+        ? this.formatDate(signalDate)
         : "Unknown";
       document.getElementById("signal-modal-time").textContent = signalDate
-        ? signalDate.toLocaleTimeString()
+        ? this.formatTime(signalDate)
         : "Unknown";
 
       // Fetch rule information

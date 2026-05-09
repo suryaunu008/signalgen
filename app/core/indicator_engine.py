@@ -150,7 +150,8 @@ class IndicatorEngine:
         return self.timeframe
     
     def update_candle_data(self, symbol: str, open_price: float, high: float, low: float, 
-                          close: float, timestamp: Optional[float] = None, volume: int = 0) -> bool:
+                          close: float, timestamp: Optional[float] = None, volume: int = 0,
+                          suppress_warnings: bool = False) -> bool:
         """
         Add new candle data for a symbol. Uses candle builder to aggregate based on timeframe.
         
@@ -162,6 +163,7 @@ class IndicatorEngine:
             close: Candle close price
             timestamp: Unix timestamp (defaults to current time)
             volume: Trading volume (defaults to 0)
+            suppress_warnings: If True, suppress insufficient-data warnings during indicator calculation
             
         Returns:
             bool: True if a new aggregated candle was completed, False otherwise
@@ -195,7 +197,7 @@ class IndicatorEngine:
                 self.candle_data[symbol].append(completed_candle)
                 
                 # Calculate indicators for this symbol
-                self._calculate_indicators_for_symbol(symbol)
+                self._calculate_indicators_for_symbol(symbol, suppress_warnings=suppress_warnings)
                 
                 self.logger.debug(f"Completed {self.timeframe} candle for {symbol}: C={completed_candle['close']}")
                 return True

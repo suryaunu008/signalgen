@@ -104,6 +104,10 @@ class ApiClient {
     return this.get("/api/rules");
   }
 
+  async getRuleSchema() {
+    return this.get("/api/rules/schema");
+  }
+
   async getRule(ruleId) {
     return this.get(`/api/rules/${ruleId}`);
   }

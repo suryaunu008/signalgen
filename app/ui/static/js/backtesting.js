@@ -4,10 +4,15 @@ class BacktestingUI {
     this.plBasis = 'close';
     this.currentPage = 1;
     this.pageSize = 25;
+    this.initialized = false;
+    this.backtestingInProgress = false;
   }
 
   async init() {
-    this.setupEventListeners();
+    if (!this.initialized) {
+      this.setupEventListeners();
+      this.initialized = true;
+    }
     this.renderTimezoneLabel();
     await this.loadRules();
     this.onModeChange(document.getElementById('backtest-mode')?.value || 'rule');
@@ -80,7 +85,6 @@ class BacktestingUI {
   }
 
   localInputToIso(value) {
-    // Accepts datetime-local shape (YYYY-MM-DDTHH:mm) and converts from device local time.
     const dt = new Date(value);
     if (Number.isNaN(dt.getTime())) {
       throw new Error(`Invalid datetime value: ${value}`);
@@ -88,8 +92,29 @@ class BacktestingUI {
     return dt.toISOString();
   }
 
+  formatDate(value) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return '-';
+    return date.toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
+    });
+  }
+
+  formatDateTime(value) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return '-';
+    return `${this.formatDate(date)} ${date.toLocaleTimeString()}`;
+  }
+
   async runBacktesting() {
+    if (this.backtestingInProgress) {
+      return;
+    }
+
     try {
+      this.backtestingInProgress = true;
       const mode = document.getElementById('backtest-mode')?.value;
       const timeframe = document.getElementById('backtest-timeframe')?.value;
       const nSteps = parseInt(document.getElementById('backtest-n-steps')?.value || '0', 10);
@@ -157,6 +182,8 @@ class BacktestingUI {
       this.hideLoading();
       this.showError(`Backtesting failed: ${error.message}`);
       console.error(error);
+    } finally {
+      this.backtestingInProgress = false;
     }
   }
 
@@ -198,7 +225,7 @@ class BacktestingUI {
   buildBacktestRowHtml(row, nSteps, plBasis) {
     const cells = [
       `<span class="font-semibold text-slate-900">${row.symbol}</span>`,
-      `<span class="text-slate-700">${new Date(row.entry_time).toLocaleString()}</span>`,
+      `<span class="text-slate-700">${this.formatDateTime(row.entry_time)}</span>`,
       `<span class="font-semibold text-slate-900">${Number(row.entry_price).toFixed(4)}</span>`
     ];
 
@@ -342,7 +369,7 @@ class BacktestingUI {
     const lines = [headers.join(',')];
 
     for (const row of result.rows) {
-      const line = [row.symbol, row.entry_time, row.entry_price];
+      const line = [row.symbol, this.formatDateTime(row.entry_time), row.entry_price];
       const entryPriceNum = Number(row.entry_price);
       for (let i = 1; i <= result.n_steps; i += 1) {
         const step = row.steps?.[`T+${i}`] || null;
