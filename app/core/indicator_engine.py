@@ -38,6 +38,7 @@ import numpy as np
 import ta
 
 from .candle_builder import CandleBuilder
+from .rule_engine import RuleEngine
 
 
 class IndicatorEngine:
@@ -75,6 +76,59 @@ class IndicatorEngine:
         self.macd_signal = 9
         self.bb_period = 20
         self.bb_std_dev = 2
+        self.required_operands = set()
+
+    def set_required_operands(self, rule_or_operands) -> None:
+        """
+        Configure additional dynamic operands needed by the active rule.
+
+        Args:
+            rule_or_operands: A full rule dict, rule definition dict, or iterable of operand strings.
+        """
+        with self.lock:
+            if isinstance(rule_or_operands, dict):
+                self.required_operands = RuleEngine.extract_required_operands(rule_or_operands)
+            elif rule_or_operands is None:
+                self.required_operands = set()
+            else:
+                self.required_operands = {
+                    operand for operand in rule_or_operands
+                    if isinstance(operand, str)
+                }
+
+    def _dynamic_requirements(self) -> Dict[str, set]:
+        requirements = {
+            'price_prev': set(),
+            'ma': set(),
+            'ema': set(),
+            'rsi': set(),
+            'adx': set(),
+            'sma_volume': set(),
+            'rel_volume': set(),
+        }
+
+        for operand in self.required_operands:
+            parsed = RuleEngine.parse_dynamic_operand(operand)
+            if not parsed:
+                continue
+            operand_type = parsed['type']
+            period = parsed['period']
+            if operand_type == 'PRICE_PREV_N':
+                requirements['price_prev'].add(period)
+            elif operand_type == 'MA_N':
+                requirements['ma'].add(period)
+            elif operand_type == 'EMA_N':
+                requirements['ema'].add(period)
+            elif operand_type == 'RSI_N':
+                requirements['rsi'].add(period)
+            elif operand_type == 'ADX_N':
+                requirements['adx'].add(period)
+            elif operand_type == 'SMA_VOLUME_N':
+                requirements['sma_volume'].add(period)
+            elif operand_type == 'REL_VOLUME_N':
+                requirements['rel_volume'].add(period)
+
+        return requirements
     
     def initialize_symbol(self, symbol: str) -> None:
         """
@@ -520,6 +574,7 @@ class IndicatorEngine:
             return
         
         current_price = float(df['close'].iloc[-1])
+        dynamic = self._dynamic_requirements()
         
         # Initialize indicators dict
         indicators = {}
@@ -531,17 +586,21 @@ class IndicatorEngine:
         if len(df) >= 2:
             indicators['PREV_CLOSE'] = float(df['close'].iloc[-2])
             indicators['PREV_OPEN'] = float(df['open'].iloc[-2])
+
+        for period in dynamic['price_prev']:
+            if len(df) > period:
+                indicators[f'PRICE_PREV_{period}'] = float(df['close'].iloc[-(period + 1)])
         
         try:
             # Simple Moving Averages
-            for period in self.ma_periods:
+            for period in sorted(set(self.ma_periods) | dynamic['ma']):
                 if len(df) >= period:
                     ma = ta.trend.sma_indicator(df['close'], window=period)
                     if ma is not None and not pd.isna(ma.iloc[-1]):
                         indicators[f'MA{period}'] = float(ma.iloc[-1])
             
             # Exponential Moving Averages
-            for period in self.ema_periods:
+            for period in sorted(set(self.ema_periods) | dynamic['ema']):
                 if len(df) >= period:
                     ema = ta.trend.ema_indicator(df['close'], window=period)
                     if ema is not None and not pd.isna(ema.iloc[-1]):
@@ -562,17 +621,20 @@ class IndicatorEngine:
                     pass
             
             # RSI
-            if len(df) >= self.rsi_period + 1:
-                rsi = ta.momentum.rsi(df['close'], window=self.rsi_period)
-                if rsi is not None and not pd.isna(rsi.iloc[-1]):
-                    indicators['RSI14'] = float(rsi.iloc[-1])
+            for period in sorted({self.rsi_period} | dynamic['rsi']):
+                if len(df) >= period + 1:
+                    rsi = ta.momentum.rsi(df['close'], window=period)
+                    if rsi is not None and not pd.isna(rsi.iloc[-1]):
+                        indicators[f'RSI{period}'] = float(rsi.iloc[-1])
             
             # ADX
-            if len(df) >= self.adx_period + 1:
+            for period in sorted({self.adx_period} | dynamic['adx']):
+                if len(df) < period + 1:
+                    continue
                 try:
-                    adx = ta.trend.adx(high=df['high'], low=df['low'], close=df['close'], window=self.adx_period)
+                    adx = ta.trend.adx(high=df['high'], low=df['low'], close=df['close'], window=period)
                     if adx is not None and not pd.isna(adx.iloc[-1]):
-                        indicators['ADX5'] = float(adx.iloc[-1])
+                        indicators[f'ADX{period}'] = float(adx.iloc[-1])
                 except:
                     pass
             
@@ -605,30 +667,32 @@ class IndicatorEngine:
                         f"max={df['volume'].max():.0f}"
                     )
                 
-                # SMA of volume (20-period)
-                if len(df) >= 20:
-                    sma_volume = ta.trend.sma_indicator(df['volume'], window=20)
+                # SMA and relative volume for configured periods
+                for period in sorted({20} | dynamic['sma_volume'] | dynamic['rel_volume']):
+                    if len(df) < period:
+                        if not suppress_warnings and period == 20:
+                            self.logger.warning(f"{symbol} Not enough data for SMA_VOLUME_20 (need 20, have {len(df)})")
+                        continue
+
+                    sma_volume = ta.trend.sma_indicator(df['volume'], window=period)
                     if sma_volume is not None and not pd.isna(sma_volume.iloc[-1]):
                         sma_vol_20 = float(sma_volume.iloc[-1])
-                        indicators['SMA_VOLUME_20'] = sma_vol_20
+                        indicators[f'SMA_VOLUME_{period}'] = sma_vol_20
                         
                         # Relative Volume (current volume / SMA volume)
                         if sma_vol_20 > 0:
                             rel_volume = current_volume / sma_vol_20
-                            indicators['REL_VOLUME_20'] = float(rel_volume)
+                            indicators[f'REL_VOLUME_{period}'] = float(rel_volume)
                             if not suppress_warnings:
-                                self.logger.debug(f"{symbol} REL_VOLUME_20 = {rel_volume:.2f}")
+                                self.logger.debug(f"{symbol} REL_VOLUME_{period} = {rel_volume:.2f}")
                         else:
                             # Set default REL_VOLUME_20 to 1.0 if SMA is 0 (low/no volume stock)
-                            indicators['REL_VOLUME_20'] = 1.0
+                            indicators[f'REL_VOLUME_{period}'] = 1.0
                             if not suppress_warnings:
-                                self.logger.debug(f"{symbol} SMA_VOLUME_20 is 0, using default REL_VOLUME_20 = 1.0")
+                                self.logger.debug(f"{symbol} SMA_VOLUME_{period} is 0, using default REL_VOLUME_{period} = 1.0")
                     else:
                         if not suppress_warnings:
-                            self.logger.warning(f"{symbol} SMA_VOLUME_20 calculation returned None or NaN")
-                else:
-                    if not suppress_warnings:
-                        self.logger.warning(f"{symbol} Not enough data for SMA_VOLUME_20 (need 20, have {len(df)})")
+                            self.logger.warning(f"{symbol} SMA_VOLUME_{period} calculation returned None or NaN")
             else:
                 if not suppress_warnings:
                     if 'volume' not in df.columns:
@@ -702,8 +766,14 @@ class IndicatorEngine:
         with self.lock:
             if symbol not in self.candle_data:
                 return False
-            # Need enough data for MACD (slowest indicator)
-            return len(self.candle_data[symbol]) >= self.macd_slow + self.macd_signal
+            default_required = self.macd_slow + self.macd_signal
+            if not self.required_operands:
+                return len(self.candle_data[symbol]) >= default_required
+            required = max(
+                RuleEngine.estimate_operand_warmup(operand)
+                for operand in self.required_operands
+            )
+            return len(self.candle_data[symbol]) >= required
     
     def validate_symbol_data(self, symbol: str) -> Dict[str, Union[bool, str]]:
         """

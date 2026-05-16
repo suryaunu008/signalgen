@@ -27,6 +27,7 @@ MVP Limitations:
 
 import json
 import logging
+import re
 from typing import Dict, Any, List, Union
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,19 @@ class RuleEngine:
     """
     
     # Supported operands for rule conditions
+    MAX_DYNAMIC_PERIOD = 250
+    MIN_DYNAMIC_PERIOD = 1
+    DYNAMIC_OPERAND_PATTERNS = {
+        "PRICE_PREV_N": re.compile(r"^PRICE_PREV_(\d+)$"),
+        "MA_N": re.compile(r"^MA(\d+)$"),
+        "EMA_N": re.compile(r"^EMA(\d+)$"),
+        "RSI_N": re.compile(r"^RSI(\d+)$"),
+        "ADX_N": re.compile(r"^ADX(\d+)$"),
+        "SMA_VOLUME_N": re.compile(r"^SMA_VOLUME_(\d+)$"),
+        "REL_VOLUME_N": re.compile(r"^REL_VOLUME_(\d+)$"),
+    }
+    DYNAMIC_CROSSABLE_TYPES = {"MA_N", "EMA_N", "RSI_N", "ADX_N", "SMA_VOLUME_N", "REL_VOLUME_N"}
+
     SUPPORTED_OPERANDS = {
         # Price indicators
         "PRICE",                    # Current price
@@ -117,6 +131,133 @@ class RuleEngine:
                 and f"{operand}_PREV" in cls.SUPPORTED_OPERANDS
             )
         )
+
+    @classmethod
+    def parse_dynamic_operand(cls, operand: Union[str, int, float]) -> Union[Dict[str, Any], None]:
+        """Parse supported dynamic operand strings such as EMA12 or PRICE_PREV_5."""
+        if not isinstance(operand, str):
+            return None
+
+        base_operand = operand[:-5] if operand.endswith("_PREV") else operand
+        is_prev = operand.endswith("_PREV")
+
+        for operand_type, pattern in cls.DYNAMIC_OPERAND_PATTERNS.items():
+            match = pattern.match(base_operand)
+            if not match:
+                continue
+
+            period = int(match.group(1))
+            if period < cls.MIN_DYNAMIC_PERIOD or period > cls.MAX_DYNAMIC_PERIOD:
+                return None
+            if is_prev and operand_type == "PRICE_PREV_N":
+                return None
+
+            return {
+                "type": operand_type,
+                "period": period,
+                "base": base_operand,
+                "is_prev": is_prev,
+            }
+
+        return None
+
+    @classmethod
+    def is_dynamic_operand(cls, operand: Union[str, int, float]) -> bool:
+        return cls.parse_dynamic_operand(operand) is not None
+
+    @classmethod
+    def is_crossable_operand(cls, operand: Union[str, int, float]) -> bool:
+        if not isinstance(operand, str) or operand.endswith("_PREV"):
+            return False
+        if operand in cls.get_crossable_operands():
+            return True
+
+        parsed = cls.parse_dynamic_operand(operand)
+        return bool(parsed and parsed["type"] in cls.DYNAMIC_CROSSABLE_TYPES)
+
+    @classmethod
+    def extract_required_operands(cls, rule: Dict[str, Any]) -> set:
+        """Return non-numeric operands needed to evaluate a rule, including cross previous values."""
+        required = set()
+        cross_ops = {"CROSS_UP", "CROSS_DOWN"}
+        for condition in rule.get("conditions", []):
+            op = condition.get("op")
+            for side in ("left", "right"):
+                operand = condition.get(side)
+                if isinstance(operand, str) and not cls._is_numeric_literal(operand):
+                    required.add(operand)
+                    if op in cross_ops and not operand.endswith("_PREV"):
+                        required.add(f"{operand}_PREV")
+        return required
+
+    @classmethod
+    def estimate_operand_warmup(cls, operand: Union[str, int, float]) -> int:
+        """Estimate minimum candle count needed for an operand to be available."""
+        if isinstance(operand, (int, float)) or cls._is_numeric_literal(operand):
+            return 1
+
+        if not isinstance(operand, str):
+            return 1
+
+        is_prev = operand.endswith("_PREV")
+        base_operand = operand[:-5] if is_prev else operand
+        parsed = cls.parse_dynamic_operand(operand)
+
+        if parsed:
+            operand_type = parsed["type"]
+            period = parsed["period"]
+            if operand_type == "PRICE_PREV_N":
+                warmup = period + 1
+            elif operand_type == "RSI_N":
+                warmup = period + 1
+            elif operand_type == "ADX_N":
+                warmup = period + 1
+            else:
+                warmup = period
+            return warmup + (1 if is_prev else 0)
+
+        static_warmup = {
+            "PRICE": 1, "PREV_CLOSE": 2, "PREV_OPEN": 2,
+            "MACD": 35, "MACD_SIGNAL": 35, "MACD_HIST": 35,
+            "BB_UPPER": 20, "BB_MIDDLE": 20, "BB_LOWER": 20, "BB_WIDTH": 20,
+            "PRICE_EMA20_DIFF_PCT": 20,
+            "VOLUME": 1,
+        }
+        if base_operand.startswith("MA") and base_operand[2:].isdigit():
+            warmup = int(base_operand[2:])
+        elif base_operand.startswith("EMA") and base_operand[3:].isdigit():
+            warmup = int(base_operand[3:])
+        elif base_operand.startswith("RSI") and base_operand[3:].isdigit():
+            warmup = int(base_operand[3:]) + 1
+        elif base_operand.startswith("ADX") and base_operand[3:].isdigit():
+            warmup = int(base_operand[3:]) + 1
+        elif base_operand.startswith("SMA_VOLUME_") and base_operand[11:].isdigit():
+            warmup = int(base_operand[11:])
+        elif base_operand.startswith("REL_VOLUME_") and base_operand[11:].isdigit():
+            warmup = int(base_operand[11:])
+        else:
+            warmup = static_warmup.get(base_operand, 1)
+
+        return warmup + (1 if is_prev else 0)
+
+    @classmethod
+    def estimate_rule_warmup(cls, rule: Dict[str, Any], default: int = 35) -> int:
+        required = cls.extract_required_operands(rule)
+        if not required:
+            return default
+        return max(cls.estimate_operand_warmup(operand) for operand in required)
+
+    @staticmethod
+    def _is_numeric_literal(operand: Union[str, int, float]) -> bool:
+        if isinstance(operand, (int, float)):
+            return True
+        if isinstance(operand, str):
+            try:
+                float(operand)
+                return True
+            except ValueError:
+                return False
+        return False
     
     def __init__(self):
         """Initialize the rule engine with supported operators."""
@@ -283,12 +424,11 @@ class RuleEngine:
                 raise RuleValidationError(f"Unsupported operator: {operator}")
 
             if operator in {"CROSS_UP", "CROSS_DOWN"}:
-                crossable_operands = set(self.get_crossable_operands())
-                if left_operand not in crossable_operands:
+                if not self.is_crossable_operand(left_operand):
                     raise RuleValidationError(
                         f"{operator} left operand must have a previous value: {left_operand}"
                     )
-                if right_operand not in crossable_operands:
+                if not self.is_crossable_operand(right_operand):
                     raise RuleValidationError(
                         f"{operator} right operand must have a previous value: {right_operand}"
                     )
@@ -378,20 +518,12 @@ class RuleEngine:
         Returns:
             bool: True if valid, False otherwise
         """
-        # Allow numeric types
-        if isinstance(operand, (int, float)):
+        # Allow numeric types and numeric strings
+        if self._is_numeric_literal(operand):
             return True
         
-        # Allow numeric strings
-        if isinstance(operand, str):
-            try:
-                float(operand)
-                return True
-            except ValueError:
-                pass
-        
         # Check if it's a supported operand
-        return operand in self.SUPPORTED_OPERANDS
+        return operand in self.SUPPORTED_OPERANDS or self.is_dynamic_operand(operand)
     
     def _evaluate_cross_up(self, left_operand: str, right_operand: str, indicator_values: Dict[str, float]) -> bool:
         """

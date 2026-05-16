@@ -239,6 +239,7 @@ class SignalGenApp {
       RSI: ["RSI14", "RSI14_PREV"],
       ADX: ["ADX5", "ADX5_PREV"],
       "Bollinger Bands": ["BB_UPPER", "BB_MIDDLE", "BB_LOWER", "BB_WIDTH"],
+      Volume: ["VOLUME", "SMA_VOLUME_20", "REL_VOLUME_20"],
       "Calculated Metrics": ["PRICE_EMA20_DIFF_PCT"],
     };
     const groups = this.ruleSchema?.operand_groups || fallbackGroups;
@@ -252,7 +253,7 @@ class SignalGenApp {
       })
       .join("");
 
-    return `${groupHtml}<optgroup label="Numeric Value"><option value="_CUSTOM_">Custom Number...</option></optgroup>`;
+    return `${groupHtml}<optgroup label="Custom"><option value="_CUSTOM_">Custom Number...</option><option value="_CUSTOM_DYNAMIC_">Custom Indicator...</option></optgroup>`;
   }
 
   escapeHtml(value) {
@@ -1053,6 +1054,11 @@ class SignalGenApp {
           }
         }
 
+        if (left === "_CUSTOM_DYNAMIC_") {
+          left = this.buildDynamicOperand(row, "left", index, validationErrors);
+          if (!left) return;
+        }
+
         // Handle custom numeric input for right side
         if (right === "_CUSTOM_") {
           const customInput = row.querySelector(".condition-right-custom");
@@ -1084,6 +1090,11 @@ class SignalGenApp {
           }
         }
 
+        if (right === "_CUSTOM_DYNAMIC_") {
+          right = this.buildDynamicOperand(row, "right", index, validationErrors);
+          if (!right) return;
+        }
+
         // Additional validation for numeric values
         if (typeof left === "number" && (isNaN(left) || !isFinite(left))) {
           validationErrors.push(
@@ -1101,13 +1112,13 @@ class SignalGenApp {
 
         if (this.isCrossOperator(op)) {
           const crossable = new Set(this.getCrossableOperands());
-          if (typeof left === "number" || !crossable.has(left)) {
+          if (typeof left === "number" || (!crossable.has(left) && !this.isDynamicCrossableOperand(left))) {
             validationErrors.push(
               `Condition ${index + 1} left side: ${op} requires an indicator with previous values`
             );
             return;
           }
-          if (typeof right === "number" || !crossable.has(right)) {
+          if (typeof right === "number" || (!crossable.has(right) && !this.isDynamicCrossableOperand(right))) {
             validationErrors.push(
               `Condition ${index + 1} right side: ${op} requires an indicator with previous values`
             );
@@ -1239,9 +1250,12 @@ class SignalGenApp {
       if (e.target.value === "_CUSTOM_") {
         console.log("DEBUG: Calling showCustomInput for left side");
         this.showCustomInput(row, "left");
+      } else if (e.target.value === "_CUSTOM_DYNAMIC_") {
+        this.showCustomDynamicInput(row, "left");
       } else {
         console.log("DEBUG: Calling hideCustomInput for left side");
         this.hideCustomInput(row, "left");
+        this.hideCustomDynamicInput(row, "left");
       }
       this.syncConditionRowForOperator(row);
     });
@@ -1258,9 +1272,12 @@ class SignalGenApp {
       if (e.target.value === "_CUSTOM_") {
         console.log("DEBUG: Calling showCustomInput for right side");
         this.showCustomInput(row, "right");
+      } else if (e.target.value === "_CUSTOM_DYNAMIC_") {
+        this.showCustomDynamicInput(row, "right");
       } else {
         console.log("DEBUG: Calling hideCustomInput for right side");
         this.hideCustomInput(row, "right");
+        this.hideCustomDynamicInput(row, "right");
       }
       this.syncConditionRowForOperator(row);
     });
@@ -1320,10 +1337,10 @@ class SignalGenApp {
       }
 
       Array.from(select.options).forEach((option) => {
-        option.disabled = crossMode && !crossable.has(option.value);
+        option.disabled = crossMode && !crossable.has(option.value) && option.value !== "_CUSTOM_DYNAMIC_";
       });
 
-      if (crossMode && !crossable.has(select.value)) {
+      if (crossMode && !crossable.has(select.value) && select.value !== "_CUSTOM_DYNAMIC_") {
         const firstCrossable = Array.from(select.options).find((option) => crossable.has(option.value));
         if (firstCrossable) {
           select.value = firstCrossable.value;
@@ -1355,6 +1372,8 @@ class SignalGenApp {
       console.error(`DEBUG: Select element not found for side: ${side}`);
       return;
     }
+
+    this.hideCustomDynamicInput(row, side);
 
     if (existingInput) {
       console.log(
@@ -1520,11 +1539,17 @@ class SignalGenApp {
 
     const select = row.querySelector(`.condition-${side}`);
     const input = row.querySelector(`.condition-${side}-custom`);
+    const dynamicWrapper = row.querySelector(`.condition-${side}-dynamic-wrap`);
     const switchButton = row.querySelector(`.condition-${side}-switch`);
 
     if (input) {
       input.remove();
       console.log(`DEBUG: Removed custom input for ${side}`);
+    }
+
+    if (dynamicWrapper) {
+      dynamicWrapper.remove();
+      console.log(`DEBUG: Removed custom dynamic input for ${side}`);
     }
 
     if (switchButton) {
@@ -1610,6 +1635,109 @@ class SignalGenApp {
     }, 0);
   }
 
+  showCustomDynamicInput(row, side) {
+    if (!row || !side) return;
+
+    const select = row.querySelector(`.condition-${side}`);
+    if (!select) return;
+
+    this.hideCustomInput(row, side);
+
+    const existing = row.querySelector(`.condition-${side}-dynamic-wrap`);
+    if (existing) return;
+
+    const bounds = this.ruleSchema?.dynamic_parameter_bounds || { min: 1, max: 250 };
+    const wrapper = document.createElement("div");
+    wrapper.className = `condition-${side}-dynamic-wrap flex-1 flex gap-2`;
+
+    const typeSelect = document.createElement("select");
+    typeSelect.className = `condition-${side}-dynamic-type flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500`;
+    typeSelect.innerHTML = `
+      <option value="PRICE_PREV">PRICE_PREV_N</option>
+      <option value="MA">MA&lt;N&gt;</option>
+      <option value="EMA" selected>EMA&lt;N&gt;</option>
+      <option value="RSI">RSI&lt;N&gt;</option>
+      <option value="ADX">ADX&lt;N&gt;</option>
+      <option value="SMA_VOLUME">SMA_VOLUME_N</option>
+      <option value="REL_VOLUME">REL_VOLUME_N</option>
+    `;
+
+    const periodInput = document.createElement("input");
+    periodInput.type = "number";
+    periodInput.min = String(bounds.min || 1);
+    periodInput.max = String(bounds.max || 250);
+    periodInput.step = "1";
+    periodInput.value = "20";
+    periodInput.className = `condition-${side}-dynamic-period w-24 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500`;
+    periodInput.title = `Period (${periodInput.min}-${periodInput.max})`;
+
+    const switchButton = document.createElement("button");
+    switchButton.type = "button";
+    switchButton.className = `condition-${side}-switch px-2 py-2 bg-gray-500 text-white rounded-md hover:bg-gray-600 transition-colors text-xs`;
+    switchButton.innerHTML = '<i class="fas fa-list"></i>';
+    switchButton.title = "Switch to dropdown";
+
+    wrapper.appendChild(typeSelect);
+    wrapper.appendChild(periodInput);
+    select.style.display = "none";
+    select.parentNode.insertBefore(wrapper, select);
+    select.parentNode.insertBefore(switchButton, select);
+
+    periodInput.addEventListener("input", () => this.validateDynamicPeriodInput(periodInput));
+    switchButton.addEventListener("click", () => this.switchToDropdown(row, side));
+  }
+
+  hideCustomDynamicInput(row, side) {
+    if (!row || !side) return;
+
+    const wrapper = row.querySelector(`.condition-${side}-dynamic-wrap`);
+    const switchButton = row.querySelector(`.condition-${side}-switch`);
+    const select = row.querySelector(`.condition-${side}`);
+
+    if (wrapper) wrapper.remove();
+    if (switchButton) switchButton.remove();
+    if (select && select.value === "_CUSTOM_DYNAMIC_") {
+      select.style.display = "";
+    }
+  }
+
+  validateDynamicPeriodInput(input) {
+    if (!input) return false;
+    const value = Number(input.value);
+    const min = Number(input.min || 1);
+    const max = Number(input.max || 250);
+    const valid = Number.isInteger(value) && value >= min && value <= max;
+    input.classList.toggle("border-red-500", !valid);
+    input.setCustomValidity(valid ? "" : `Value must be an integer between ${min} and ${max}`);
+    return valid;
+  }
+
+  buildDynamicOperand(row, side, index, validationErrors) {
+    const typeSelect = row.querySelector(`.condition-${side}-dynamic-type`);
+    const periodInput = row.querySelector(`.condition-${side}-dynamic-period`);
+
+    if (!typeSelect || !periodInput) {
+      validationErrors.push(`Condition ${index + 1} ${side} side: Dynamic indicator input missing`);
+      return null;
+    }
+
+    if (!this.validateDynamicPeriodInput(periodInput)) {
+      validationErrors.push(`Condition ${index + 1} ${side} side: Invalid dynamic indicator period`);
+      return null;
+    }
+
+    const period = parseInt(periodInput.value, 10);
+    const type = typeSelect.value;
+    if (type === "PRICE_PREV") return `PRICE_PREV_${period}`;
+    if (type === "SMA_VOLUME") return `SMA_VOLUME_${period}`;
+    if (type === "REL_VOLUME") return `REL_VOLUME_${period}`;
+    return `${type}${period}`;
+  }
+
+  isDynamicCrossableOperand(operand) {
+    return /^(MA|EMA|RSI|ADX)\d+$/.test(operand) || /^(SMA_VOLUME|REL_VOLUME)_\d+$/.test(operand);
+  }
+
   /**
    * Remove condition row from rule builder
    */
@@ -1634,6 +1762,8 @@ class SignalGenApp {
     // Remove any custom inputs and restore select visibility
     const leftCustomInput = row.querySelector(".condition-left-custom");
     const rightCustomInput = row.querySelector(".condition-right-custom");
+    const leftDynamicInput = row.querySelector(".condition-left-dynamic-wrap");
+    const rightDynamicInput = row.querySelector(".condition-right-dynamic-wrap");
     const leftSwitchButton = row.querySelector(".condition-left-switch");
     const rightSwitchButton = row.querySelector(".condition-right-switch");
     const leftSelect = row.querySelector(".condition-left");
@@ -1644,6 +1774,12 @@ class SignalGenApp {
     }
     if (rightCustomInput) {
       rightCustomInput.remove();
+    }
+    if (leftDynamicInput) {
+      leftDynamicInput.remove();
+    }
+    if (rightDynamicInput) {
+      rightDynamicInput.remove();
     }
     if (leftSwitchButton) {
       leftSwitchButton.remove();

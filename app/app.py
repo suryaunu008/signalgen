@@ -506,6 +506,61 @@ class SignalGenApp:
                 return JSONResponse(content={
                     "operand_groups": filtered_groups,
                     "operands": sorted(supported),
+                    "dynamic_operand_templates": [
+                        {
+                            "value": "PRICE_PREV_{n}",
+                            "label": "Historical Close Price",
+                            "parameter": "n",
+                            "min": self.rule_engine.MIN_DYNAMIC_PERIOD,
+                            "max": self.rule_engine.MAX_DYNAMIC_PERIOD,
+                        },
+                        {
+                            "value": "MA{period}",
+                            "label": "Simple Moving Average",
+                            "parameter": "period",
+                            "min": self.rule_engine.MIN_DYNAMIC_PERIOD,
+                            "max": self.rule_engine.MAX_DYNAMIC_PERIOD,
+                        },
+                        {
+                            "value": "EMA{period}",
+                            "label": "Exponential Moving Average",
+                            "parameter": "period",
+                            "min": self.rule_engine.MIN_DYNAMIC_PERIOD,
+                            "max": self.rule_engine.MAX_DYNAMIC_PERIOD,
+                        },
+                        {
+                            "value": "RSI{period}",
+                            "label": "Relative Strength Index",
+                            "parameter": "period",
+                            "min": self.rule_engine.MIN_DYNAMIC_PERIOD,
+                            "max": self.rule_engine.MAX_DYNAMIC_PERIOD,
+                        },
+                        {
+                            "value": "ADX{period}",
+                            "label": "Average Directional Index",
+                            "parameter": "period",
+                            "min": self.rule_engine.MIN_DYNAMIC_PERIOD,
+                            "max": self.rule_engine.MAX_DYNAMIC_PERIOD,
+                        },
+                        {
+                            "value": "SMA_VOLUME_{period}",
+                            "label": "Volume SMA",
+                            "parameter": "period",
+                            "min": self.rule_engine.MIN_DYNAMIC_PERIOD,
+                            "max": self.rule_engine.MAX_DYNAMIC_PERIOD,
+                        },
+                        {
+                            "value": "REL_VOLUME_{period}",
+                            "label": "Relative Volume",
+                            "parameter": "period",
+                            "min": self.rule_engine.MIN_DYNAMIC_PERIOD,
+                            "max": self.rule_engine.MAX_DYNAMIC_PERIOD,
+                        },
+                    ],
+                    "dynamic_parameter_bounds": {
+                        "min": self.rule_engine.MIN_DYNAMIC_PERIOD,
+                        "max": self.rule_engine.MAX_DYNAMIC_PERIOD,
+                    },
                     "operators": [
                         operator for operator in [">", "<", ">=", "<=", "CROSS_UP", "CROSS_DOWN"]
                         if operator in self.rule_engine.SUPPORTED_OPERATORS
@@ -1243,40 +1298,13 @@ class SignalGenApp:
                     return False
 
                 def _required_rule_operands(rule_def: Dict[str, Any]) -> set:
-                    required = set()
-                    cross_ops = {"CROSS_UP", "CROSS_DOWN"}
-                    for condition in rule_def.get("conditions", []):
-                        op = condition.get("op")
-                        for side in ("left", "right"):
-                            operand = condition.get(side)
-                            if isinstance(operand, str) and not _is_numeric_operand(operand):
-                                required.add(operand)
-                                if op in cross_ops and not operand.endswith("_PREV"):
-                                    required.add(f"{operand}_PREV")
-                    return required
+                    return RuleEngine.extract_required_operands(rule_def)
 
                 def _has_required_indicators(indicators: Dict[str, Any], required: set) -> bool:
                     return all(operand in indicators for operand in required)
 
                 def _rule_warmup_start(start_dt: datetime, rule_def: Dict[str, Any], timeframe: str) -> datetime:
-                    period_by_prefix = {
-                        "MA20": 20, "MA50": 50, "MA100": 100, "MA200": 200,
-                        "EMA6": 6, "EMA9": 9, "EMA10": 10, "EMA13": 13,
-                        "EMA20": 20, "EMA21": 21, "EMA34": 34, "EMA50": 50,
-                        "MACD": 35, "MACD_SIGNAL": 35, "MACD_HIST": 35,
-                        "RSI14": 15, "ADX5": 6,
-                        "BB_UPPER": 20, "BB_MIDDLE": 20, "BB_LOWER": 20, "BB_WIDTH": 20,
-                        "SMA_VOLUME_20": 20, "REL_VOLUME_20": 20,
-                        "PRICE_EMA20_DIFF_PCT": 20,
-                    }
-                    required = _required_rule_operands(rule_def)
-                    warmup_bars = 0
-                    for operand in required:
-                        base_operand = operand[:-5] if operand.endswith("_PREV") else operand
-                        operand_bars = period_by_prefix.get(base_operand, 1)
-                        if operand.endswith("_PREV"):
-                            operand_bars += 1
-                        warmup_bars = max(warmup_bars, operand_bars)
+                    warmup_bars = RuleEngine.estimate_rule_warmup(rule_def)
 
                     if timeframe == "1d":
                         warmup_days = (warmup_bars * 2) + 10
@@ -1342,6 +1370,7 @@ class SignalGenApp:
                             continue
 
                         indicator_engine = IndicatorEngine(timeframe=request.timeframe)
+                        indicator_engine.set_required_operands(rule_to_evaluate)
                         cooldown_seconds = rule_to_evaluate.get('cooldown_sec', 60)
                         last_signal_ts = None
 

@@ -685,6 +685,8 @@ class ScalpingEngine:
                 return False
             
             self.active_rule = rule
+            rule_to_evaluate = {**rule, **rule.get('definition', {})}
+            self.indicator_engine.set_required_operands(rule_to_evaluate)
             self.logger.info(f"Set active rule: {rule['name']} (ID: {rule_id})")
             return True
             

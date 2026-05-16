@@ -208,6 +208,7 @@ class BacktestingEngine:
         
         # Prepare rule for evaluation (merge root fields with definition)
         rule_to_evaluate = {**self.current_rule, **self.current_rule['definition']}
+        self.indicator_engine.set_required_operands(rule_to_evaluate)
         
         # Track cooldown
         last_signal_time = None
@@ -227,7 +228,8 @@ class BacktestingEngine:
                 high=candle['high'],
                 low=candle['low'],
                 close=candle['close'],
-                timestamp=timestamp
+                timestamp=timestamp,
+                volume=candle.get('volume', 0)
             )
             
             # Only check rule when candle completes

@@ -225,6 +225,8 @@ class SwingScreeningEngine:
             # Create indicator engine for this symbol
             indicator_engine = IndicatorEngine(timeframe=self.timeframe)
             rule_engine = RuleEngine()
+            rule_to_evaluate = {**rule, **rule['definition']}
+            indicator_engine.set_required_operands(rule_to_evaluate)
             
             # Feed all candles to indicator engine
             for candle in candles:
@@ -239,7 +241,8 @@ class SwingScreeningEngine:
                     high=candle['high'],
                     low=candle['low'],
                     close=candle['close'],
-                    timestamp=timestamp
+                    timestamp=timestamp,
+                    volume=candle.get('volume', 0)
                 )
             
             # Check if we have enough data for indicators
@@ -266,9 +269,6 @@ class SwingScreeningEngine:
                     'status': 'error',
                     'error_message': 'Insufficient data for indicators'
                 }
-            
-            # Prepare rule for evaluation (merge root fields with definition)
-            rule_to_evaluate = {**rule, **rule['definition']}
             
             # Evaluate rule (returns boolean only)
             signal_triggered = rule_engine.evaluate(
