@@ -51,6 +51,13 @@ class TelegramNotifier:
         self.chat_ids: List[str] = []
         self.enabled = False
         self.api_base_url = "https://api.telegram.org/bot{token}"
+
+    def _as_bool(self, value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
         
     async def initialize(self) -> bool:
         """
@@ -61,7 +68,9 @@ class TelegramNotifier:
         """
         try:
             # Load bot token from settings
-            self.bot_token = self.repository.get_setting('telegram_bot_token')
+            bot_token = self.repository.get_setting('telegram_bot_token')
+            self.bot_token = str(bot_token).strip() if bot_token else None
+            self.chat_ids = []
             
             # Load chat IDs from settings
             chat_ids_str = self.repository.get_setting('telegram_chat_ids', '')
@@ -73,7 +82,7 @@ class TelegramNotifier:
                 ]
             
             # Check if enabled
-            self.enabled = self.repository.get_setting('telegram_enabled', False)
+            self.enabled = self._as_bool(self.repository.get_setting('telegram_enabled', False))
             
             if self.enabled and self.bot_token and self.chat_ids:
                 self.logger.info(

@@ -1138,10 +1138,21 @@ class SignalGenApp:
         def get_telegram_settings():
             """Get current Telegram notification settings."""
             try:
+                def _as_bool(value: Any) -> bool:
+                    if isinstance(value, bool):
+                        return value
+                    if isinstance(value, str):
+                        return value.strip().lower() in {"1", "true", "yes", "on"}
+                    return bool(value)
+
+                bot_token = self.repository.get_setting('telegram_bot_token', '')
+                chat_ids = self.repository.get_setting('telegram_chat_ids', '')
                 settings = {
-                    'bot_token': self.repository.get_setting('telegram_bot_token', ''),
-                    'chat_ids': self.repository.get_setting('telegram_chat_ids', ''),
-                    'enabled': self.repository.get_setting('telegram_enabled', False)
+                    'bot_token': bot_token,
+                    'chat_ids': chat_ids,
+                    'enabled': _as_bool(self.repository.get_setting('telegram_enabled', False)),
+                    'token_configured': bool(str(bot_token or '').strip()),
+                    'chat_ids_configured': bool(str(chat_ids or '').strip())
                 }
                 
                 # Mask bot token for security (show only last 4 characters)
@@ -1192,10 +1203,18 @@ class SignalGenApp:
                 if hasattr(self.broadcaster, 'telegram_notifier') and self.broadcaster.telegram_notifier:
                     await self.broadcaster.telegram_notifier.initialize()
                     self.logger.info("Telegram notifier reinitialized with new settings")
+
+                enabled_value = (
+                    telegram_settings.enabled
+                    if telegram_settings.enabled is not None
+                    else self.repository.get_setting('telegram_enabled', False)
+                )
+                if isinstance(enabled_value, str):
+                    enabled_value = enabled_value.strip().lower() in {"1", "true", "yes", "on"}
                 
                 return {
                     "message": "Telegram settings updated successfully",
-                    "enabled": self.repository.get_setting('telegram_enabled', False)
+                    "enabled": bool(enabled_value)
                 }
             except Exception as e:
                 self.logger.error(f"Error updating Telegram settings: {e}")
@@ -1225,9 +1244,10 @@ class SignalGenApp:
                 if not hasattr(self.broadcaster, 'telegram_notifier') or not self.broadcaster.telegram_notifier:
                     from .notifications.telegram_notifier import TelegramNotifier
                     temp_notifier = TelegramNotifier(self.repository)
-                    await temp_notifier.initialize()
                 else:
                     temp_notifier = self.broadcaster.telegram_notifier
+
+                await temp_notifier.initialize()
                 
                 # Send test message
                 success = await temp_notifier.send_test_message(test_request.chat_id)

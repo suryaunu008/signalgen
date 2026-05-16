@@ -50,10 +50,14 @@ class TelegramSettings {
     const statusElement = document.getElementById("telegram-status");
     if (!statusElement) return;
 
+    const tokenValue = String(this.settings.bot_token || "").trim();
     const hasToken =
-      this.settings.bot_token && !this.settings.bot_token.startsWith("...");
+      this.settings.token_configured ??
+      (tokenValue.length > 0 && tokenValue !== "***");
     const hasChatIds =
-      this.settings.chat_ids && this.settings.chat_ids.length > 0;
+      this.settings.chat_ids_configured ??
+      (this.settings.chat_ids &&
+        String(this.settings.chat_ids).trim().length > 0);
     const isEnabled = this.settings.enabled;
 
     let status = "";
@@ -109,7 +113,7 @@ class TelegramSettings {
 
     // Only update if value changed and not masked
     const newToken = tokenInput?.value.trim();
-    if (newToken && !newToken.startsWith("...")) {
+    if (newToken && !newToken.startsWith("...") && newToken !== "***") {
       newSettings.bot_token = newToken;
     }
 
@@ -131,7 +135,7 @@ class TelegramSettings {
       });
 
       if (response.ok) {
-        const result = await response.json();
+        await response.json();
         this.showNotification("Settings saved successfully", "success");
         await this.loadSettings(); // Reload to get masked token
       } else {
