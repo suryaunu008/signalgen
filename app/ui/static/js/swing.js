@@ -229,6 +229,38 @@ class SwingTradingUI {
     return Math.min(365, Math.max(1, parsed));
   }
 
+  getHistoricalDateRange() {
+    const startValue = document.getElementById('swing-start-date')?.value || '';
+    const endValue = document.getElementById('swing-end-date')?.value || '';
+
+    if (!startValue && !endValue) {
+      return null;
+    }
+
+    if (!startValue || !endValue) {
+      throw new Error('Please fill both screening start and end dates, or leave both empty');
+    }
+
+    const start = new Date(`${startValue}T00:00:00`);
+    const endInclusive = new Date(`${endValue}T00:00:00`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(endInclusive.getTime())) {
+      throw new Error('Invalid screening date');
+    }
+    if (endInclusive < start) {
+      throw new Error('Screening end date must be the same as or later than start date');
+    }
+
+    const endExclusive = new Date(endInclusive);
+    endExclusive.setDate(endExclusive.getDate() + 1);
+
+    return {
+      start_date: start.toISOString(),
+      end_date: endExclusive.toISOString(),
+      display_start: startValue,
+      display_end: endValue
+    };
+  }
+
   setScreeningState(inProgress) {
     this.screeningInProgress = inProgress;
     const button = document.getElementById('run-screening-btn');
@@ -274,6 +306,7 @@ class SwingTradingUI {
       const universeId = document.getElementById('swing-universe-select')?.value;
       const timeframe = document.getElementById('swing-timeframe')?.value || '1d';
       const lookbackDays = this.getSafeLookbackDays();
+      const historicalRange = this.getHistoricalDateRange();
       const lookbackInput = document.getElementById('swing-lookback');
       if (lookbackInput) lookbackInput.value = String(lookbackDays);
 
@@ -291,16 +324,24 @@ class SwingTradingUI {
 
       this.activeScreeningController = new AbortController();
 
+      const payload = {
+        rule_id: parseInt(ruleId, 10),
+        ticker_universe_id: parseInt(universeId, 10),
+        timeframe,
+        lookback_days: lookbackDays
+      };
+      if (historicalRange) {
+        payload.start_date = historicalRange.start_date;
+        payload.end_date = historicalRange.end_date;
+        payload.display_start = historicalRange.display_start;
+        payload.display_end = historicalRange.display_end;
+      }
+
       const response = await fetch('/api/swing/screen', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: this.activeScreeningController.signal,
-        body: JSON.stringify({
-          rule_id: parseInt(ruleId, 10),
-          ticker_universe_id: parseInt(universeId, 10),
-          timeframe,
-          lookback_days: lookbackDays
-        })
+        body: JSON.stringify(payload)
       });
 
       if (!response.ok) {
@@ -376,6 +417,16 @@ class SwingTradingUI {
 
     summaryCard.appendChild(summaryTitle);
     summaryCard.appendChild(summaryGrid);
+    const period = document.createElement('p');
+    period.className = 'text-sm text-gray-600 mb-2';
+    if (summary.screening_start && summary.screening_end) {
+      const endDate = new Date(summary.screening_end);
+      endDate.setDate(endDate.getDate() - 1);
+      period.textContent = `Historical period: ${this.formatDate(summary.screening_start)} - ${this.formatDate(endDate)}`;
+    } else {
+      period.textContent = `Lookback period: ${summary.lookback_days || '-'} days`;
+    }
+    summaryCard.appendChild(period);
     if (result.request_id) {
       const requestId = document.createElement('p');
       requestId.className = 'text-xs text-gray-500';

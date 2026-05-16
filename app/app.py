@@ -178,6 +178,8 @@ class SwingScreenRequest(BaseModel):
     ticker_universe_id: int = Field(..., gt=0)
     timeframe: str = Field(default='1d', pattern='^(1h|4h|1d)$')
     lookback_days: int = Field(default=30, ge=1, le=365)
+    start_date: Optional[str] = Field(None)  # ISO date/datetime string
+    end_date: Optional[str] = Field(None)    # ISO date/datetime string
 
 class UniverseCreate(BaseModel):
     """Model for creating ticker universe."""
@@ -1645,6 +1647,28 @@ class SignalGenApp:
                 from .engines.swing_screening_engine import SwingScreeningEngine
                 request_id = str(uuid4())
                 start_time = time.perf_counter()
+
+                def _parse_screen_date(value: Optional[str], field_name: str) -> Optional[datetime]:
+                    if not value:
+                        return None
+                    try:
+                        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                    except Exception as ex:
+                        raise ValueError(f"Invalid {field_name}: {value}") from ex
+
+                    if parsed.tzinfo is not None:
+                        parsed = parsed.astimezone().replace(tzinfo=None)
+                    return parsed
+
+                start_date = _parse_screen_date(request.start_date, "start_date")
+                end_date = _parse_screen_date(request.end_date, "end_date")
+
+                if bool(start_date) != bool(end_date):
+                    raise ValueError("start_date and end_date must be provided together")
+
+                if start_date and end_date:
+                    if end_date <= start_date:
+                        raise ValueError("end_date must be later than start_date")
                 
                 # Create screening engine
                 engine = SwingScreeningEngine(timeframe=request.timeframe)
@@ -1654,13 +1678,18 @@ class SignalGenApp:
                 results = await engine.screen_universe(
                     universe_id=request.ticker_universe_id,
                     rule_id=request.rule_id,
-                    lookback_days=request.lookback_days
+                    lookback_days=request.lookback_days,
+                    start_date=start_date,
+                    end_date=end_date
                 )
                 
                 # Filter out errors for summary
                 successful = [r for r in results if r['status'] == 'success']
                 signals_found = [r for r in successful if r['signal'] is not None]
-                no_data = [r for r in results if r.get('error_message') == 'No data available']
+                no_data = [
+                    r for r in results
+                    if 'no data available' in (r.get('error_message') or '').lower()
+                ]
                 duration_ms = int((time.perf_counter() - start_time) * 1000)
                 return {
                     "message": "Screening completed successfully",
@@ -1672,7 +1701,10 @@ class SignalGenApp:
                         "signals_found": len(signals_found),
                         "errors": len(results) - len(successful),
                         "no_data": len(no_data),
-                        "duration_ms": duration_ms
+                        "duration_ms": duration_ms,
+                        "screening_start": start_date.isoformat() if start_date else None,
+                        "screening_end": end_date.isoformat() if end_date else None,
+                        "lookback_days": request.lookback_days if not start_date else None
                     }
                 }
                 

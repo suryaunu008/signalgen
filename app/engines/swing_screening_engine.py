@@ -71,7 +71,9 @@ class SwingScreeningEngine:
         self,
         tickers: List[str],
         rule_id: int,
-        lookback_days: int = 30
+        lookback_days: int = 30,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
     ) -> List[Dict[str, Any]]:
         """
         Screen multiple tickers for swing trading signals.
@@ -110,16 +112,28 @@ class SwingScreeningEngine:
         
         self.logger.info(f"Screening {len(tickers)} tickers with rule '{rule['name']}' on {self.timeframe} timeframe")
         
-        # Calculate date range
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=lookback_days)
+        # Calculate evaluation date range. If explicit dates are omitted,
+        # keep the existing lookback behavior.
+        evaluation_end = end_date or datetime.now()
+        evaluation_start = start_date or (evaluation_end - timedelta(days=lookback_days))
+        if evaluation_end <= evaluation_start:
+            raise ValueError("Screening end date must be later than start date")
+
+        rule_to_evaluate = {**rule, **rule['definition']}
+        fetch_start = self._calculate_warmup_start(evaluation_start, rule_to_evaluate)
         
         # Process tickers with bounded concurrency + retry/backoff.
         semaphore = asyncio.Semaphore(self.max_concurrency)
 
         async def guarded_screen(ticker: str) -> Dict[str, Any]:
             async with semaphore:
-                return await self._screen_ticker_with_retry(ticker, rule, start_date, end_date)
+                return await self._screen_ticker_with_retry(
+                    ticker,
+                    rule,
+                    fetch_start,
+                    evaluation_start,
+                    evaluation_end
+                )
 
         gathered = await asyncio.gather(*[guarded_screen(t) for t in tickers], return_exceptions=True)
         results = []
@@ -150,8 +164,9 @@ class SwingScreeningEngine:
         self,
         symbol: str,
         rule: Dict,
-        start_date: datetime,
-        end_date: datetime
+        fetch_start: datetime,
+        evaluation_start: datetime,
+        evaluation_end: datetime
     ) -> Dict[str, Any]:
         """
         Screen a single ticker with simple exponential backoff for transient failures.
@@ -159,7 +174,7 @@ class SwingScreeningEngine:
         last_result = None
 
         for attempt in range(1, self.max_retries + 1):
-            result = await self._screen_ticker(symbol, rule, start_date, end_date)
+            result = await self._screen_ticker(symbol, rule, fetch_start, evaluation_start, evaluation_end)
             last_result = result
 
             if result.get('status') == 'success':
@@ -187,8 +202,9 @@ class SwingScreeningEngine:
         self,
         symbol: str,
         rule: Dict,
-        start_date: datetime,
-        end_date: datetime
+        fetch_start: datetime,
+        evaluation_start: datetime,
+        evaluation_end: datetime
     ) -> Dict[str, Any]:
         """
         Screen a single ticker.
@@ -206,8 +222,8 @@ class SwingScreeningEngine:
             # Fetch historical data
             candles = await self.data_source.fetch_historical_data(
                 symbol=symbol,
-                start_date=start_date,
-                end_date=end_date,
+                start_date=fetch_start,
+                end_date=evaluation_end,
                 timeframe=self.timeframe
             )
             
@@ -227,13 +243,23 @@ class SwingScreeningEngine:
             rule_engine = RuleEngine()
             rule_to_evaluate = {**rule, **rule['definition']}
             indicator_engine.set_required_operands(rule_to_evaluate)
+            latest_evaluation_candle = None
             
             # Feed all candles to indicator engine
             for candle in candles:
                 # Convert datetime to Unix timestamp if needed
                 timestamp = candle['timestamp']
                 if isinstance(timestamp, datetime):
+                    candle_dt = timestamp.replace(tzinfo=None) if timestamp.tzinfo else timestamp
                     timestamp = timestamp.timestamp()
+                else:
+                    candle_dt = datetime.fromtimestamp(timestamp)
+
+                if candle_dt < evaluation_start or candle_dt >= evaluation_end:
+                    in_evaluation_window = False
+                else:
+                    in_evaluation_window = True
+                    latest_evaluation_candle = candle
                 
                 indicator_engine.update_candle_data(
                     symbol=symbol,
@@ -244,6 +270,17 @@ class SwingScreeningEngine:
                     timestamp=timestamp,
                     volume=candle.get('volume', 0)
                 )
+
+            if latest_evaluation_candle is None:
+                return {
+                    'symbol': symbol,
+                    'signal': None,
+                    'price': None,
+                    'timestamp': None,
+                    'indicators': {},
+                    'status': 'error',
+                    'error_message': 'No data available in selected screening period'
+                }
             
             # Check if we have enough data for indicators
             if not indicator_engine.is_symbol_ready(symbol):
@@ -279,14 +316,11 @@ class SwingScreeningEngine:
             # Get signal type from rule definition (default to 'BUY' if not specified)
             signal_type = rule_to_evaluate.get('signal_type', 'BUY') if signal_triggered else None
             
-            # Get latest candle
-            latest_candle = candles[-1]
-            
             return {
                 'symbol': symbol,
                 'signal': signal_type if signal_triggered else None,
-                'price': latest_candle['close'],
-                'timestamp': latest_candle['timestamp'],
+                'price': latest_evaluation_candle['close'],
+                'timestamp': latest_evaluation_candle['timestamp'],
                 'indicators': indicators,
                 'status': 'success',
                 'error_message': None
@@ -308,7 +342,9 @@ class SwingScreeningEngine:
         self,
         universe_id: int,
         rule_id: int,
-        lookback_days: int = 30
+        lookback_days: int = 30,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
     ) -> List[Dict[str, Any]]:
         """
         Screen all tickers in a universe.
@@ -337,7 +373,24 @@ class SwingScreeningEngine:
         self.logger.info(f"Screening universe '{universe['name']}' with {len(tickers)} tickers")
         
         # Screen all tickers
-        return await self.screen_tickers(tickers, rule_id, lookback_days)
+        return await self.screen_tickers(
+            tickers,
+            rule_id,
+            lookback_days,
+            start_date=start_date,
+            end_date=end_date
+        )
+
+    def _calculate_warmup_start(self, evaluation_start: datetime, rule: Dict[str, Any]) -> datetime:
+        """Fetch extra candles before the evaluation period so indicators are ready."""
+        warmup_bars = RuleEngine.estimate_rule_warmup(rule)
+        if self.timeframe == '1d':
+            warmup_days = (warmup_bars * 2) + 10
+        elif self.timeframe == '4h':
+            warmup_days = max(30, warmup_bars // 2 + 14)
+        else:
+            warmup_days = max(14, warmup_bars // 4 + 7)
+        return evaluation_start - timedelta(days=warmup_days)
     
     def get_supported_timeframes(self) -> List[str]:
         """
