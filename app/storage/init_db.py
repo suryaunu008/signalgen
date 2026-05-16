@@ -19,7 +19,6 @@ Default Rule (Updated for Advanced Scalping):
 
 Initial Settings:
 - app_version: Current app version
-- max_symbols_per_watchlist: 5 (MVP limitation)
 - default_cooldown_sec: 60 (default cooldown between signals)
 """
 
@@ -126,7 +125,6 @@ def _seed_initial_settings(repo: SQLiteRepository) -> None:
     """
     initial_settings = {
         "app_version": "1.0.0",
-        "max_symbols_per_watchlist": 5,
         "default_cooldown_sec": 60,
         "ibkr_host": "127.0.0.1",
         "ibkr_port": 7497,

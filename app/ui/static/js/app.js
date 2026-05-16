@@ -759,7 +759,7 @@ class SignalGenApp {
                             ${watchlist.symbols.join(", ")}
                         </p>
                         <p class="text-xs text-gray-500 mt-1">
-                            ${watchlist.symbols.length}/5 symbols
+                            ${watchlist.symbols.length} symbols
                             ${watchlist.is_active ? " • Active" : ""}
                         </p>
                     </div>
@@ -1872,11 +1872,6 @@ class SignalGenApp {
         return;
       }
 
-      if (this.watchlistSymbols.length > 5) {
-        this.showToast("Maximum 5 symbols allowed", "error");
-        return;
-      }
-
       const watchlistData = {
         name,
         symbols: this.watchlistSymbols,
@@ -1919,11 +1914,6 @@ class SignalGenApp {
 
     if (this.watchlistSymbols.includes(symbol)) {
       this.showToast("Symbol already added", "error");
-      return;
-    }
-
-    if (this.watchlistSymbols.length >= 5) {
-      this.showToast("Maximum 5 symbols allowed", "error");
       return;
     }
 

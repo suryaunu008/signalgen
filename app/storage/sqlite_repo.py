@@ -18,9 +18,8 @@ Key Features:
 - Transaction management
 - Data migration support
 
-MVP Limitations:
+Implementation Notes:
 - Single SQLite file (no client-server architecture)
-- Maximum 5 symbols per watchlist
 - One active watchlist at a time
 
 Typical Usage:
@@ -327,14 +326,11 @@ class SQLiteRepository:
         
         Args:
             name: Watchlist name
-            symbols: List of symbols (max 5 for MVP)
+            symbols: List of symbols
             
         Returns:
             int: ID of created watchlist
         """
-        if len(symbols) > 5:
-            raise ValueError("Watchlist cannot exceed 5 symbols for MVP")
-        
         with self._get_connection() as conn:
             cursor = conn.cursor()
             
@@ -744,7 +740,7 @@ class SQLiteRepository:
     
     def validate_watchlist_limits(self, watchlist_id: int) -> Dict[str, Any]:
         """
-        Validate watchlist against MVP limits.
+        Validate watchlist data.
         
         Args:
             watchlist_id: Watchlist ID to validate
@@ -757,12 +753,6 @@ class SQLiteRepository:
             return {"valid": False, "message": "Watchlist not found"}
         
         symbol_count = len(watchlist.get('symbols', []))
-        
-        if symbol_count > 5:
-            return {
-                "valid": False,
-                "message": f"Watchlist exceeds MVP limit of 5 symbols (has {symbol_count})"
-            }
         
         if symbol_count == 0:
             return {

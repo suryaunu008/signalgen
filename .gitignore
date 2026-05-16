@@ -148,6 +148,7 @@ Thumbs.db
 signalgen.db
 signalgen.log
 *.log
+reports/
 
 # Temporary files
 tmp/

@@ -78,7 +78,7 @@ class RuleUpdate(BaseModel):
 class WatchlistCreate(BaseModel):
     """Model for creating a new watchlist."""
     name: str = Field(..., min_length=1, max_length=100)
-    symbols: List[str] = Field(..., min_items=1, max_items=5)
+    symbols: List[str] = Field(..., min_items=1)
     
     @validator('symbols')
     def validate_symbols(cls, v):
@@ -91,7 +91,7 @@ class WatchlistCreate(BaseModel):
 class WatchlistUpdate(BaseModel):
     """Model for updating an existing watchlist."""
     name: Optional[str] = Field(None, min_length=1, max_length=100)
-    symbols: Optional[List[str]] = Field(None, min_items=1, max_items=5)
+    symbols: Optional[List[str]] = Field(None, min_items=1)
     
     @validator('symbols')
     def validate_symbols(cls, v):
@@ -877,13 +877,6 @@ class SignalGenApp:
                         raise HTTPException(status_code=404, detail="Watchlist not found")
                     if not rule:
                         raise HTTPException(status_code=404, detail="Rule not found")
-                    
-                    # Validate watchlist limits
-                    if len(watchlist['symbols']) > 5:
-                        raise HTTPException(
-                            status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="Watchlist cannot exceed 5 symbols for MVP"
-                        )
                     
                     # Start engine in separate thread with event loop
                     engine_thread = threading.Thread(

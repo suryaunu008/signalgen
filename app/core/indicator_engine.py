@@ -5,7 +5,7 @@ This module provides technical indicator calculations for the SignalGen scalping
 Uses pandas-ta library for efficient and accurate technical indicator calculations.
 
 Key Features:
-- Multi-symbol support (up to 5 symbols for MVP)
+- Multi-symbol support
 - Moving averages (MA20, MA50, MA100, MA200, EMA6, EMA9, EMA10, EMA13, EMA20, EMA21, EMA34, EMA50)
 - MACD (Moving Average Convergence Divergence)
 - RSI (Relative Strength Index)

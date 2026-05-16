@@ -14,8 +14,7 @@ Key Features:
 Data Flow:
 IBKR Bar Update → Indicator Engine → Rule Engine → Signal Generator → WebSocket Emit
 
-MVP Limitations:
-- Maximum 5 tickers per run
+Operational Notes:
 - Single active watchlist
 - No watchlist changes during engine operation
 - 1-minute or 5-second bar intervals
@@ -462,23 +461,13 @@ class ScalpingEngine:
         Subscribe to market data for symbols.
         
         Args:
-            symbols: List of symbols to subscribe to (max 5 for MVP)
+            symbols: List of symbols to subscribe to
             
         Returns:
             bool: True if subscription successful, False otherwise
         """
         if not self.is_connected:
             self.logger.error("Cannot subscribe - not connected to IBKR")
-            return False
-        
-        if len(symbols) > 5:
-            self.logger.error("Cannot subscribe to more than 5 symbols for MVP")
-            return False
-        
-        # Check if already at limit
-        total_symbols = len(self.active_watchlist) + len(symbols)
-        if total_symbols > 5:
-            self.logger.error(f"Cannot subscribe - would exceed 5 symbol limit (current: {len(self.active_watchlist)}, requested: {len(symbols)})")
             return False
         
         try:
@@ -699,18 +688,13 @@ class ScalpingEngine:
         Start the scalping engine with specified watchlist and rule.
         
         Args:
-            watchlist: List of symbols to monitor (max 5 for MVP)
+            watchlist: List of symbols to monitor
             rule_id: ID of the rule to use for signal generation
             
         Returns:
             bool: True if engine started successfully, False otherwise
         """
         if not await self.start():
-            return False
-        
-        if len(watchlist) > 5:
-            self.logger.error("Watchlist cannot exceed 5 symbols for MVP")
-            await self.stop()
             return False
         
         # Set active rule
