@@ -11,6 +11,8 @@ Key Features:
 - RSI (Relative Strength Index)
 - ADX (Average Directional Index)
 - Bollinger Bands
+- Stochastic Oscillator
+- Ichimoku Cloud
 - Previous value tracking for all indicators (for CROSS_UP/CROSS_DOWN)
 - Rolling data management for efficient calculations
 - Thread-safe operations for async environment
@@ -24,6 +26,8 @@ Supported Indicators:
 - RSI14, RSI14_PREV (14-period RSI)
 - ADX5, ADX5_PREV (5-period ADX)
 - BB_UPPER, BB_MIDDLE, BB_LOWER, BB_WIDTH (Bollinger Bands)
+- STOCH_K, STOCH_D (Stochastic Oscillator)
+- ICHIMOKU_CONVERSION, ICHIMOKU_BASE, ICHIMOKU_A, ICHIMOKU_B (Ichimoku Cloud)
 - PRICE_EMA20_DIFF_PCT (calculated metric)
 """
 
@@ -76,6 +80,11 @@ class IndicatorEngine:
         self.macd_signal = 9
         self.bb_period = 20
         self.bb_std_dev = 2
+        self.stoch_window = 14
+        self.stoch_smooth_window = 3
+        self.ichimoku_conversion = 9
+        self.ichimoku_base = 26
+        self.ichimoku_span_b = 52
         self.required_operands = set()
 
     def set_required_operands(self, rule_or_operands) -> None:
@@ -528,6 +537,79 @@ class IndicatorEngine:
             'upper': bb_upper.iloc[-1],
             'width': bb_upper.iloc[-1] - bb_lower.iloc[-1]
         }
+
+    def calculate_stochastic(self, candles: List[Dict], window: int = 14, smooth_window: int = 3) -> Dict[str, float]:
+        """
+        Calculate Stochastic Oscillator.
+
+        Args:
+            candles: List of candle dicts with high, low, close
+            window: Lookback period for %K (default 14)
+            smooth_window: Smoothing period for %D (default 3)
+
+        Returns:
+            Dict with 'k' and 'd'
+
+        Raises:
+            ValueError: If insufficient data
+        """
+        required = window + smooth_window
+        if len(candles) < required:
+            raise ValueError(f"Insufficient data for Stochastic: need {required}, have {len(candles)}")
+
+        highs = pd.Series([c['high'] for c in candles])
+        lows = pd.Series([c['low'] for c in candles])
+        closes = pd.Series([c['close'] for c in candles])
+
+        stoch_k = ta.momentum.stoch(highs, lows, closes, window=window, smooth_window=smooth_window)
+        stoch_d = ta.momentum.stoch_signal(highs, lows, closes, window=window, smooth_window=smooth_window)
+
+        return {
+            'k': stoch_k.iloc[-1],
+            'd': stoch_d.iloc[-1],
+        }
+
+    def calculate_ichimoku(self, candles: List[Dict], conversion: int = 9, base: int = 26, span_b: int = 52) -> Dict[str, float]:
+        """
+        Calculate Ichimoku Cloud lines.
+
+        Args:
+            candles: List of candle dicts with high, low
+            conversion: Tenkan-sen period (default 9)
+            base: Kijun-sen period (default 26)
+            span_b: Senkou Span B period (default 52)
+
+        Returns:
+            Dict with 'conversion', 'base', 'a', and 'b'
+
+        Raises:
+            ValueError: If insufficient data
+        """
+        if len(candles) < span_b:
+            raise ValueError(f"Insufficient data for Ichimoku: need {span_b}, have {len(candles)}")
+
+        highs = pd.Series([c['high'] for c in candles])
+        lows = pd.Series([c['low'] for c in candles])
+
+        conversion_line = ta.trend.ichimoku_conversion_line(
+            highs, lows, window1=conversion, window2=base
+        )
+        base_line = ta.trend.ichimoku_base_line(
+            highs, lows, window1=conversion, window2=base
+        )
+        span_a = ta.trend.ichimoku_a(
+            highs, lows, window1=conversion, window2=base, visual=False
+        )
+        span_b_line = ta.trend.ichimoku_b(
+            highs, lows, window2=base, window3=span_b, visual=False
+        )
+
+        return {
+            'conversion': conversion_line.iloc[-1],
+            'base': base_line.iloc[-1],
+            'a': span_a.iloc[-1],
+            'b': span_b_line.iloc[-1],
+        }
     
     def _create_dataframe(self, symbol: str) -> pd.DataFrame:
         """
@@ -650,6 +732,68 @@ class IndicatorEngine:
                         indicators['BB_MIDDLE'] = float(bb_middle.iloc[-1])
                         indicators['BB_LOWER'] = float(bb_lower.iloc[-1])
                         indicators['BB_WIDTH'] = indicators['BB_UPPER'] - indicators['BB_LOWER']
+                except:
+                    pass
+
+            # Stochastic Oscillator
+            if len(df) >= self.stoch_window + self.stoch_smooth_window:
+                try:
+                    stoch_k = ta.momentum.stoch(
+                        high=df['high'],
+                        low=df['low'],
+                        close=df['close'],
+                        window=self.stoch_window,
+                        smooth_window=self.stoch_smooth_window
+                    )
+                    stoch_d = ta.momentum.stoch_signal(
+                        high=df['high'],
+                        low=df['low'],
+                        close=df['close'],
+                        window=self.stoch_window,
+                        smooth_window=self.stoch_smooth_window
+                    )
+
+                    if stoch_k is not None and not pd.isna(stoch_k.iloc[-1]):
+                        indicators['STOCH_K'] = float(stoch_k.iloc[-1])
+                        indicators['STOCH_D'] = float(stoch_d.iloc[-1])
+                except:
+                    pass
+
+            # Ichimoku Cloud
+            if len(df) >= self.ichimoku_span_b:
+                try:
+                    ichimoku_conversion = ta.trend.ichimoku_conversion_line(
+                        high=df['high'],
+                        low=df['low'],
+                        window1=self.ichimoku_conversion,
+                        window2=self.ichimoku_base
+                    )
+                    ichimoku_base = ta.trend.ichimoku_base_line(
+                        high=df['high'],
+                        low=df['low'],
+                        window1=self.ichimoku_conversion,
+                        window2=self.ichimoku_base
+                    )
+                    ichimoku_a = ta.trend.ichimoku_a(
+                        high=df['high'],
+                        low=df['low'],
+                        window1=self.ichimoku_conversion,
+                        window2=self.ichimoku_base,
+                        visual=False
+                    )
+                    ichimoku_b = ta.trend.ichimoku_b(
+                        high=df['high'],
+                        low=df['low'],
+                        window2=self.ichimoku_base,
+                        window3=self.ichimoku_span_b,
+                        visual=False
+                    )
+
+                    if ichimoku_conversion is not None and not pd.isna(ichimoku_conversion.iloc[-1]):
+                        indicators['ICHIMOKU_CONVERSION'] = float(ichimoku_conversion.iloc[-1])
+                        indicators['ICHIMOKU_BASE'] = float(ichimoku_base.iloc[-1])
+                        indicators['ICHIMOKU_A'] = float(ichimoku_a.iloc[-1])
+                        indicators['ICHIMOKU_B'] = float(ichimoku_b.iloc[-1])
                 except:
                     pass
             
@@ -849,5 +993,10 @@ class IndicatorEngine:
                 "adx_period": self.adx_period,
                 "bb_period": self.bb_period,
                 "bb_std_dev": self.bb_std_dev,
+                "stoch_window": self.stoch_window,
+                "stoch_smooth_window": self.stoch_smooth_window,
+                "ichimoku_conversion": self.ichimoku_conversion,
+                "ichimoku_base": self.ichimoku_base,
+                "ichimoku_span_b": self.ichimoku_span_b,
                 "symbols": symbols
             }

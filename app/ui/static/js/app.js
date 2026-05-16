@@ -241,6 +241,17 @@ class SignalGenApp {
       RSI: ["RSI14", "RSI14_PREV"],
       ADX: ["ADX5", "ADX5_PREV"],
       "Bollinger Bands": ["BB_UPPER", "BB_MIDDLE", "BB_LOWER", "BB_WIDTH"],
+      "Stochastic Oscillator": ["STOCH_K", "STOCH_D", "STOCH_K_PREV", "STOCH_D_PREV"],
+      "Ichimoku Cloud": [
+        "ICHIMOKU_CONVERSION",
+        "ICHIMOKU_BASE",
+        "ICHIMOKU_A",
+        "ICHIMOKU_B",
+        "ICHIMOKU_CONVERSION_PREV",
+        "ICHIMOKU_BASE_PREV",
+        "ICHIMOKU_A_PREV",
+        "ICHIMOKU_B_PREV",
+      ],
       Volume: ["VOLUME", "SMA_VOLUME_20", "REL_VOLUME_20"],
       "Calculated Metrics": ["PRICE_EMA20_DIFF_PCT"],
     };
@@ -1329,7 +1340,13 @@ class SignalGenApp {
       "MACD",
       "MACD_HIST",
       "MACD_SIGNAL",
+      "ICHIMOKU_A",
+      "ICHIMOKU_B",
+      "ICHIMOKU_BASE",
+      "ICHIMOKU_CONVERSION",
       "RSI14",
+      "STOCH_D",
+      "STOCH_K",
     ];
   }
 

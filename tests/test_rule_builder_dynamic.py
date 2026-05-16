@@ -24,6 +24,8 @@ def test_rule_engine_accepts_existing_and_dynamic_operands():
         _rule("PRICE_PREV_5", ">", "EMA12"),
         _rule("RSI7", "<", 40),
         _rule("REL_VOLUME_10", ">=", 1.3),
+        _rule("STOCH_K", ">", "STOCH_D"),
+        _rule("ICHIMOKU_CONVERSION", ">", "ICHIMOKU_BASE"),
     ]:
         engine.validate_rule(rule)
 
@@ -45,6 +47,34 @@ def test_rule_engine_allows_dynamic_crossable_operands():
         "EMA12_PREV": 9,
         "EMA20_PREV": 10,
     }
+
+    engine.validate_rule(rule)
+    assert engine.evaluate(rule, indicators) is True
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "indicators"),
+    [
+        (
+            "STOCH_K",
+            "STOCH_D",
+            {"STOCH_K": 55, "STOCH_D": 50, "STOCH_K_PREV": 45, "STOCH_D_PREV": 50},
+        ),
+        (
+            "ICHIMOKU_CONVERSION",
+            "ICHIMOKU_BASE",
+            {
+                "ICHIMOKU_CONVERSION": 105,
+                "ICHIMOKU_BASE": 100,
+                "ICHIMOKU_CONVERSION_PREV": 95,
+                "ICHIMOKU_BASE_PREV": 100,
+            },
+        ),
+    ],
+)
+def test_rule_engine_allows_new_indicator_crossable_operands(left, right, indicators):
+    engine = RuleEngine()
+    rule = _rule(left, "CROSS_UP", right)
 
     engine.validate_rule(rule)
     assert engine.evaluate(rule, indicators) is True
@@ -95,3 +125,58 @@ def test_indicator_engine_generates_dynamic_technical_indicators():
     assert "RSI7" in indicators
     assert math.isfinite(indicators["EMA12"])
     assert math.isfinite(indicators["RSI7"])
+
+
+def test_indicator_engine_generates_stochastic_and_ichimoku_indicators():
+    indicator_engine = IndicatorEngine(timeframe="1m")
+
+    for i in range(1, 82):
+        price = 100 + (i * 0.3) + ((i % 7) * 0.2)
+        indicator_engine.update_candle_data(
+            symbol="NVDA",
+            open_price=price - 0.5,
+            high=price + 2,
+            low=price - 2,
+            close=price,
+            timestamp=float(i * 60),
+            volume=2000 + i,
+        )
+
+    indicators = indicator_engine.get_indicators("NVDA")
+
+    for key in [
+        "STOCH_K",
+        "STOCH_D",
+        "ICHIMOKU_CONVERSION",
+        "ICHIMOKU_BASE",
+        "ICHIMOKU_A",
+        "ICHIMOKU_B",
+    ]:
+        assert key in indicators
+        assert math.isfinite(indicators[key])
+
+
+def test_indicator_engine_warmup_for_stochastic_and_ichimoku_operands():
+    stoch_engine = IndicatorEngine(timeframe="1m")
+    stoch_engine.set_required_operands(_rule("STOCH_K", ">", "STOCH_D"))
+
+    for i in range(1, 18):
+        price = 50 + i
+        stoch_engine.update_candle_data("AMD", price, price + 1, price - 1, price, float(i * 60), 100 + i)
+
+    assert stoch_engine.is_symbol_ready("AMD") is False
+
+    stoch_engine.update_candle_data("AMD", 68, 69, 67, 68, 18 * 60.0, 118)
+    assert stoch_engine.is_symbol_ready("AMD") is True
+
+    ichimoku_engine = IndicatorEngine(timeframe="1m")
+    ichimoku_engine.set_required_operands(_rule("ICHIMOKU_A", ">", "ICHIMOKU_B"))
+
+    for i in range(1, 53):
+        price = 100 + i
+        ichimoku_engine.update_candle_data("TSLA", price, price + 1, price - 1, price, float(i * 60), 500 + i)
+
+    assert ichimoku_engine.is_symbol_ready("TSLA") is False
+
+    ichimoku_engine.update_candle_data("TSLA", 153, 154, 152, 153, 53 * 60.0, 553)
+    assert ichimoku_engine.is_symbol_ready("TSLA") is True

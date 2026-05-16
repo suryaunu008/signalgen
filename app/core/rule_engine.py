@@ -90,6 +90,19 @@ class RuleEngine:
         "BB_LOWER",                # Bollinger Bands lower band
         "BB_WIDTH",                # Bollinger Bands width (upper - lower)
         "BB_UPPER_PREV", "BB_MIDDLE_PREV", "BB_LOWER_PREV",  # Previous BB values
+
+        # Stochastic Oscillator
+        "STOCH_K",                 # Stochastic %K line
+        "STOCH_D",                 # Stochastic %D signal line
+        "STOCH_K_PREV", "STOCH_D_PREV",  # Previous Stochastic values
+
+        # Ichimoku Cloud
+        "ICHIMOKU_CONVERSION",     # Tenkan-sen conversion line
+        "ICHIMOKU_BASE",           # Kijun-sen base line
+        "ICHIMOKU_A",              # Senkou Span A
+        "ICHIMOKU_B",              # Senkou Span B
+        "ICHIMOKU_CONVERSION_PREV", "ICHIMOKU_BASE_PREV",
+        "ICHIMOKU_A_PREV", "ICHIMOKU_B_PREV",
         
         # ADX (Average Directional Index) - Trend strength
         "ADX5",                    # ADX 5 period current value
@@ -220,6 +233,9 @@ class RuleEngine:
             "PRICE": 1, "PREV_CLOSE": 2, "PREV_OPEN": 2,
             "MACD": 35, "MACD_SIGNAL": 35, "MACD_HIST": 35,
             "BB_UPPER": 20, "BB_MIDDLE": 20, "BB_LOWER": 20, "BB_WIDTH": 20,
+            "STOCH_K": 17, "STOCH_D": 17,
+            "ICHIMOKU_CONVERSION": 52, "ICHIMOKU_BASE": 52,
+            "ICHIMOKU_A": 52, "ICHIMOKU_B": 52,
             "PRICE_EMA20_DIFF_PCT": 20,
             "VOLUME": 1,
         }
