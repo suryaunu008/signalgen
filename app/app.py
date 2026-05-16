@@ -159,6 +159,7 @@ class ManualBacktestEntry(BaseModel):
     """Manual backtest entry row."""
     symbol: str = Field(..., min_length=1, max_length=20)
     entry_time: str = Field(...)  # ISO datetime string
+    signal_type: Optional[str] = Field(default='BUY', pattern='^(BUY|SELL)$')
 
 class BacktestScreenRequest(BaseModel):
     """Model for new backtesting screen request (rule/manual)."""
@@ -166,6 +167,7 @@ class BacktestScreenRequest(BaseModel):
     timeframe: str = Field(..., pattern='^(1m|5m|15m|1h|4h|1d)$')
     n_steps: int = Field(..., ge=1, le=100)
     data_source: str = Field(..., pattern='^(ibkr|yahoo)$')
+    pl_basis: str = Field(default='close', pattern='^(open|high|low|close)$')
     rule_id: Optional[int] = Field(None, gt=0)
     start_at: Optional[str] = Field(None)  # ISO datetime string
     end_at: Optional[str] = Field(None)    # ISO datetime string
@@ -1305,6 +1307,127 @@ class SignalGenApp:
                 def _has_required_indicators(indicators: Dict[str, Any], required: set) -> bool:
                     return all(operand in indicators for operand in required)
 
+                def _calculate_trade_pl(signal_type: str, entry_price: float, exit_price: float) -> Dict[str, float]:
+                    direction = -1 if str(signal_type).upper() == "SELL" else 1
+                    pl = (exit_price - entry_price) * direction
+                    pl_pct = 0 if entry_price == 0 else (pl / entry_price) * 100
+                    return {"pl": pl, "pl_pct": pl_pct}
+
+                def _empty_step_metrics(step: int) -> Dict[str, Any]:
+                    return {
+                        "step": step,
+                        "label": f"T+{step}",
+                        "evaluated": 0,
+                        "missing": 0,
+                        "wins": 0,
+                        "losses": 0,
+                        "flats": 0,
+                        "win_rate": 0,
+                        "total_pl": 0,
+                        "avg_pl": 0,
+                        "total_pl_pct": 0,
+                        "avg_pl_pct": 0,
+                        "best_pl": None,
+                        "worst_pl": None,
+                        "best_pl_pct": None,
+                        "worst_pl_pct": None,
+                        "avg_win": 0,
+                        "avg_loss": 0,
+                        "profit_factor": None
+                    }
+
+                def _calculate_metrics(rows: List[Dict[str, Any]], n_steps: int, pl_basis: str) -> Dict[str, Any]:
+                    per_step = []
+                    by_symbol: Dict[str, Dict[str, Any]] = {}
+
+                    for step in range(1, n_steps + 1):
+                        values = []
+                        missing = 0
+                        label = f"T+{step}"
+
+                        for row in rows:
+                            step_data = row.get("steps", {}).get(label)
+                            if not step_data or step_data.get("pl") is None:
+                                missing += 1
+                                continue
+                            values.append(step_data)
+
+                        metrics = _empty_step_metrics(step)
+                        metrics["missing"] = missing
+                        if values:
+                            pls = [float(v["pl"]) for v in values]
+                            pl_pcts = [float(v["pl_pct"]) for v in values]
+                            wins = [v for v in pls if v > 0]
+                            losses = [v for v in pls if v < 0]
+                            flats = [v for v in pls if v == 0]
+                            gross_profit = sum(wins)
+                            gross_loss = abs(sum(losses))
+
+                            metrics.update({
+                                "evaluated": len(values),
+                                "wins": len(wins),
+                                "losses": len(losses),
+                                "flats": len(flats),
+                                "win_rate": (len(wins) / len(values)) * 100,
+                                "total_pl": sum(pls),
+                                "avg_pl": sum(pls) / len(pls),
+                                "total_pl_pct": sum(pl_pcts),
+                                "avg_pl_pct": sum(pl_pcts) / len(pl_pcts),
+                                "best_pl": max(pls),
+                                "worst_pl": min(pls),
+                                "best_pl_pct": max(pl_pcts),
+                                "worst_pl_pct": min(pl_pcts),
+                                "avg_win": (sum(wins) / len(wins)) if wins else 0,
+                                "avg_loss": (sum(losses) / len(losses)) if losses else 0,
+                                "profit_factor": (gross_profit / gross_loss) if gross_loss > 0 else (None if gross_profit == 0 else gross_profit)
+                            })
+                        per_step.append(metrics)
+
+                    final_label = f"T+{n_steps}"
+                    for row in rows:
+                        symbol = row["symbol"]
+                        if symbol not in by_symbol:
+                            by_symbol[symbol] = {
+                                "symbol": symbol,
+                                "trades": 0,
+                                "evaluated": 0,
+                                "wins": 0,
+                                "losses": 0,
+                                "total_pl": 0,
+                                "avg_pl": 0,
+                                "avg_pl_pct": 0
+                            }
+                        by_symbol[symbol]["trades"] += 1
+                        final_step = row.get("steps", {}).get(final_label)
+                        if not final_step or final_step.get("pl") is None:
+                            continue
+                        by_symbol[symbol]["evaluated"] += 1
+                        pl = float(final_step["pl"])
+                        pl_pct = float(final_step["pl_pct"])
+                        by_symbol[symbol]["wins"] += 1 if pl > 0 else 0
+                        by_symbol[symbol]["losses"] += 1 if pl < 0 else 0
+                        by_symbol[symbol]["total_pl"] += pl
+                        by_symbol[symbol]["avg_pl_pct"] += pl_pct
+
+                    for metrics in by_symbol.values():
+                        evaluated = metrics["evaluated"]
+                        if evaluated > 0:
+                            metrics["avg_pl"] = metrics["total_pl"] / evaluated
+                            metrics["avg_pl_pct"] = metrics["avg_pl_pct"] / evaluated
+                            metrics["win_rate"] = (metrics["wins"] / evaluated) * 100
+                        else:
+                            metrics["win_rate"] = 0
+
+                    final_step_metrics = per_step[-1] if per_step else _empty_step_metrics(n_steps)
+                    return {
+                        "pl_basis": pl_basis,
+                        "final_horizon": final_label,
+                        "total_entries": len(rows),
+                        "final": final_step_metrics,
+                        "per_step": per_step,
+                        "by_symbol": sorted(by_symbol.values(), key=lambda item: item["total_pl"], reverse=True)
+                    }
+
                 def _rule_warmup_start(start_dt: datetime, rule_def: Dict[str, Any], timeframe: str) -> datetime:
                     warmup_bars = RuleEngine.estimate_rule_warmup(rule_def)
 
@@ -1412,6 +1535,7 @@ class SignalGenApp:
                                     "entry_time": ts if isinstance(ts, datetime) else datetime.fromtimestamp(ts_unix),
                                     "display_time": _wall_clock_iso(raw_ts) if isinstance(raw_ts, datetime) else None,
                                     "entry_price": float(candle['close']),
+                                    "signal_type": str(rule_to_evaluate.get('signal_type', 'BUY')).upper(),
                                     "source": "rule"
                                 })
                                 last_signal_ts = ts_unix
@@ -1428,6 +1552,7 @@ class SignalGenApp:
                             "entry_time": entry_time,
                             "display_time": None,
                             "entry_price": None,
+                            "signal_type": (item.signal_type or "BUY").upper(),
                             "source": "manual"
                         })
 
@@ -1461,33 +1586,45 @@ class SignalGenApp:
                     entry_price = entry["entry_price"] if entry["entry_price"] is not None else float(entry_candle['close'])
 
                     step_values = {}
+                    signal_type = str(entry.get("signal_type", "BUY")).upper()
                     for step in range(1, request.n_steps + 1):
                         ci = idx + step
                         if ci >= len(candles):
                             step_values[f"T+{step}"] = None
                             continue
                         c = candles[ci]
+                        basis_price = float(c[request.pl_basis])
+                        trade_pl = _calculate_trade_pl(signal_type, float(entry_price), basis_price)
                         step_values[f"T+{step}"] = {
                             "time": _wall_clock_iso(c['timestamp']) if isinstance(c['timestamp'], datetime) else str(c['timestamp']),
                             "open": float(c['open']),
                             "high": float(c['high']),
                             "low": float(c['low']),
-                            "close": float(c['close'])
+                            "close": float(c['close']),
+                            "basis": request.pl_basis,
+                            "basis_price": basis_price,
+                            "pl": trade_pl["pl"],
+                            "pl_pct": trade_pl["pl_pct"]
                         }
 
                     rows.append({
                         "symbol": symbol,
+                        "signal_type": signal_type,
                         "entry_time": entry.get("display_time") or _utc_iso(entry_time),
                         "entry_price": float(entry_price),
                         "source": entry["source"],
                         "steps": step_values
                     })
 
+                metrics = _calculate_metrics(rows, request.n_steps, request.pl_basis)
+
                 return {
                     "mode": request.mode,
                     "timeframe": request.timeframe,
                     "n_steps": request.n_steps,
+                    "pl_basis": request.pl_basis,
                     "row_count": len(rows),
+                    "metrics": metrics,
                     "rows": rows
                 }
 

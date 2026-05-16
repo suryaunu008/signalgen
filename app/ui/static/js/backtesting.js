@@ -79,7 +79,11 @@ class BacktestingUI {
       if (parts.length < 2) {
         throw new Error(`Invalid manual entry line: ${line}`);
       }
-      entries.push({ symbol: parts[0], entry_time: this.localInputToIso(parts[1]) });
+      const signalType = (parts[2] || 'BUY').toUpperCase();
+      if (!['BUY', 'SELL'].includes(signalType)) {
+        throw new Error(`Invalid signal type in line: ${line}`);
+      }
+      entries.push({ symbol: parts[0], entry_time: this.localInputToIso(parts[1]), signal_type: signalType });
     }
     return entries;
   }
@@ -89,7 +93,7 @@ class BacktestingUI {
     if (Number.isNaN(dt.getTime())) {
       throw new Error(`Invalid datetime value: ${value}`);
     }
-    return dt.toISOString();
+    return value;
   }
 
   formatDate(value) {
@@ -145,7 +149,8 @@ class BacktestingUI {
         mode,
         timeframe,
         n_steps: nSteps,
-        data_source: dataSource
+        data_source: dataSource,
+        pl_basis: plBasis
       };
 
       if (mode === 'rule') {
@@ -187,7 +192,7 @@ class BacktestingUI {
       }
 
       const result = await response.json();
-      result.pl_basis = this.plBasis;
+      result.pl_basis = result.pl_basis || this.plBasis;
       this.currentResults = result;
       this.renderResults(result);
       this.hideLoading();
@@ -205,12 +210,13 @@ class BacktestingUI {
     const container = document.getElementById('backtest-results-container');
     if (!container) return;
 
-    const headers = ['Ticker', 'Entry Time', 'Entry Price'];
+    const headers = ['Ticker', 'Signal', 'Entry Time', 'Entry Price'];
     for (let i = 1; i <= result.n_steps; i += 1) {
       headers.push(`T+${i}`);
     }
 
-    const thead = `<tr>${headers.map((h, idx) => `<th class="${idx < 3 ? 'sticky z-20 bg-white' : 'bg-slate-100'} px-3 py-3 text-left text-xs font-semibold tracking-wide text-slate-700 uppercase border-b border-slate-200 ${idx === 0 ? 'left-0' : idx === 1 ? 'left-[120px]' : idx === 2 ? 'left-[320px]' : ''}">${h}</th>`).join('')}</tr>`;
+    const stickyLeft = ['left-0', 'left-[120px]', 'left-[220px]', 'left-[420px]'];
+    const thead = `<tr>${headers.map((h, idx) => `<th class="${idx < 4 ? 'sticky z-20 bg-white' : 'bg-slate-100'} px-3 py-3 text-left text-xs font-semibold tracking-wide text-slate-700 uppercase border-b border-slate-200 ${idx < 4 ? stickyLeft[idx] : ''}">${h}</th>`).join('')}</tr>`;
 
     this.currentPage = 1;
 
@@ -224,6 +230,7 @@ class BacktestingUI {
           <span class="rounded-full bg-slate-100 text-slate-700 px-2.5 py-1 text-xs font-semibold">n ${result.n_steps}</span>
           <span class="rounded-full bg-amber-100 text-amber-800 px-2.5 py-1 text-xs font-semibold">P/L basis ${(result.pl_basis || 'close').toUpperCase()}</span>
         </div>
+        ${this.buildMetricsHtml(result.metrics)}
         <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
           <table class="min-w-full bg-white">
             <thead>${thead}</thead>
@@ -237,8 +244,11 @@ class BacktestingUI {
   }
 
   buildBacktestRowHtml(row, nSteps, plBasis) {
+    const signalType = (row.signal_type || 'BUY').toUpperCase();
+    const signalClass = signalType === 'SELL' ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700';
     const cells = [
       `<span class="font-semibold text-slate-900">${row.symbol}</span>`,
+      `<span class="rounded-full px-2 py-1 text-xs font-semibold ${signalClass}">${signalType}</span>`,
       `<span class="text-slate-700">${this.formatDateTime(row.entry_time)}</span>`,
       `<span class="font-semibold text-slate-900">${Number(row.entry_price).toFixed(4)}</span>`
     ];
@@ -250,9 +260,9 @@ class BacktestingUI {
         cells.push('-');
       } else {
         const priceField = plBasis || 'close';
-        const basisNum = Number(step[priceField]);
-        const pl = basisNum - entryPriceNum;
-        const plPct = entryPriceNum === 0 ? 0 : (pl / entryPriceNum) * 100;
+        const basisNum = Number(step.basis_price ?? step[priceField]);
+        const pl = Number(step.pl ?? (basisNum - entryPriceNum));
+        const plPct = Number(step.pl_pct ?? (entryPriceNum === 0 ? 0 : (pl / entryPriceNum) * 100));
         const plClass = pl > 0
           ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
           : pl < 0
@@ -277,7 +287,95 @@ class BacktestingUI {
       }
     }
 
-    return `<tr class="odd:bg-white even:bg-slate-50 hover:bg-blue-50/40">${cells.map((v, idx) => `<td class="${idx < 3 ? 'sticky z-10 bg-white' : ''} px-3 py-2 align-top text-sm border-b border-slate-200 ${idx === 0 ? 'left-0 min-w-[120px]' : idx === 1 ? 'left-[120px] min-w-[200px]' : idx === 2 ? 'left-[320px] min-w-[120px]' : ''}">${v}</td>`).join('')}</tr>`;
+    const stickyLeft = ['left-0 min-w-[120px]', 'left-[120px] min-w-[100px]', 'left-[220px] min-w-[200px]', 'left-[420px] min-w-[120px]'];
+    return `<tr class="odd:bg-white even:bg-slate-50 hover:bg-blue-50/40">${cells.map((v, idx) => `<td class="${idx < 4 ? 'sticky z-10 bg-white' : ''} px-3 py-2 align-top text-sm border-b border-slate-200 ${idx < 4 ? stickyLeft[idx] : ''}">${v}</td>`).join('')}</tr>`;
+  }
+
+  buildMetricsHtml(metrics) {
+    if (!metrics || !metrics.final) return '';
+
+    const final = metrics.final;
+    const formatNumber = (value, digits = 2) => value === null || value === undefined || Number.isNaN(Number(value)) ? '-' : Number(value).toFixed(digits);
+    const formatPct = (value) => value === null || value === undefined || Number.isNaN(Number(value)) ? '-' : `${Number(value).toFixed(2)}%`;
+    const plClass = Number(final.total_pl) > 0 ? 'text-emerald-700' : Number(final.total_pl) < 0 ? 'text-rose-700' : 'text-slate-700';
+    const metricCards = [
+      ['Final Horizon', metrics.final_horizon || '-', 'text-slate-900'],
+      ['Evaluated', `${final.evaluated || 0}/${metrics.total_entries || 0}`, 'text-slate-900'],
+      ['Win Rate', formatPct(final.win_rate), 'text-emerald-700'],
+      ['Total P/L', formatNumber(final.total_pl, 4), plClass],
+      ['Avg P/L %', formatPct(final.avg_pl_pct), plClass],
+      ['Profit Factor', final.profit_factor === null || final.profit_factor === undefined ? '-' : formatNumber(final.profit_factor, 2), 'text-blue-700']
+    ];
+
+    const perStepRows = (metrics.per_step || []).map((step) => {
+      const totalClass = Number(step.total_pl) > 0 ? 'text-emerald-700' : Number(step.total_pl) < 0 ? 'text-rose-700' : 'text-slate-700';
+      return `
+        <tr class="odd:bg-white even:bg-slate-50">
+          <td class="px-3 py-2 text-sm font-semibold text-slate-900">${step.label}</td>
+          <td class="px-3 py-2 text-sm text-slate-700">${step.evaluated}</td>
+          <td class="px-3 py-2 text-sm text-slate-700">${step.wins}/${step.losses}/${step.flats}</td>
+          <td class="px-3 py-2 text-sm text-slate-700">${formatPct(step.win_rate)}</td>
+          <td class="px-3 py-2 text-sm font-semibold ${totalClass}">${formatNumber(step.total_pl, 4)}</td>
+          <td class="px-3 py-2 text-sm ${totalClass}">${formatPct(step.avg_pl_pct)}</td>
+          <td class="px-3 py-2 text-sm text-slate-700">${formatNumber(step.best_pl, 4)} / ${formatNumber(step.worst_pl, 4)}</td>
+          <td class="px-3 py-2 text-sm text-slate-700">${step.missing}</td>
+        </tr>
+      `;
+    }).join('');
+    const bySymbolRows = (metrics.by_symbol || []).slice(0, 10).map((row) => {
+      const totalClass = Number(row.total_pl) > 0 ? 'text-emerald-700' : Number(row.total_pl) < 0 ? 'text-rose-700' : 'text-slate-700';
+      return `
+        <tr class="odd:bg-white even:bg-slate-50">
+          <td class="px-3 py-2 text-sm font-semibold text-slate-900">${row.symbol}</td>
+          <td class="px-3 py-2 text-sm text-slate-700">${row.evaluated}/${row.trades}</td>
+          <td class="px-3 py-2 text-sm text-slate-700">${formatPct(row.win_rate)}</td>
+          <td class="px-3 py-2 text-sm font-semibold ${totalClass}">${formatNumber(row.total_pl, 4)}</td>
+          <td class="px-3 py-2 text-sm ${totalClass}">${formatPct(row.avg_pl_pct)}</td>
+        </tr>
+      `;
+    }).join('');
+
+    return `
+      <div class="mb-4 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+        ${metricCards.map(([label, value, cls]) => `
+          <div class="rounded-lg border border-slate-200 bg-white p-3">
+            <div class="text-[11px] font-semibold uppercase text-slate-500">${label}</div>
+            <div class="mt-1 text-lg font-bold ${cls}">${value}</div>
+          </div>
+        `).join('')}
+      </div>
+      <div class="mb-4 overflow-x-auto rounded-lg border border-slate-200 bg-white">
+        <table class="min-w-full">
+          <thead>
+            <tr class="bg-slate-100">
+              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Horizon</th>
+              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Eval</th>
+              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">W/L/F</th>
+              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Win Rate</th>
+              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Total P/L</th>
+              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Avg P/L%</th>
+              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Best/Worst</th>
+              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Missing</th>
+            </tr>
+          </thead>
+          <tbody>${perStepRows || '<tr><td colspan="8" class="px-3 py-3 text-sm text-slate-500">No metric rows</td></tr>'}</tbody>
+        </table>
+      </div>
+      <div class="mb-4 overflow-x-auto rounded-lg border border-slate-200 bg-white">
+        <table class="min-w-full">
+          <thead>
+            <tr class="bg-slate-100">
+              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Ticker</th>
+              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Eval/Trade</th>
+              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Win Rate</th>
+              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Final P/L</th>
+              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Avg P/L%</th>
+            </tr>
+          </thead>
+          <tbody>${bySymbolRows || '<tr><td colspan="5" class="px-3 py-3 text-sm text-slate-500">No symbol metrics</td></tr>'}</tbody>
+        </table>
+      </div>
+    `;
   }
 
   renderBacktestTable() {
@@ -375,7 +473,7 @@ class BacktestingUI {
     }
 
     const result = this.currentResults;
-    const headers = ['Ticker', 'Entry Time', 'Entry Price'];
+    const headers = ['Ticker', 'Signal', 'Entry Time', 'Entry Price'];
     for (let i = 1; i <= result.n_steps; i += 1) {
       headers.push(`T+${i} OHLC`, `T+${i} P/L`, `T+${i} P/L%`);
     }
@@ -383,7 +481,7 @@ class BacktestingUI {
     const lines = [headers.join(',')];
 
     for (const row of result.rows) {
-      const line = [row.symbol, this.formatDateTime(row.entry_time), row.entry_price];
+      const line = [row.symbol, row.signal_type || 'BUY', this.formatDateTime(row.entry_time), row.entry_price];
       const entryPriceNum = Number(row.entry_price);
       for (let i = 1; i <= result.n_steps; i += 1) {
         const step = row.steps?.[`T+${i}`] || null;
@@ -391,9 +489,9 @@ class BacktestingUI {
           line.push('', '', '');
         } else {
           const priceField = result.pl_basis || 'close';
-          const basisNum = Number(step[priceField]);
-          const pl = basisNum - entryPriceNum;
-          const plPct = entryPriceNum === 0 ? 0 : (pl / entryPriceNum) * 100;
+          const basisNum = Number(step.basis_price ?? step[priceField]);
+          const pl = Number(step.pl ?? (basisNum - entryPriceNum));
+          const plPct = Number(step.pl_pct ?? (entryPriceNum === 0 ? 0 : (pl / entryPriceNum) * 100));
           line.push(
             `"O:${step.open} H:${step.high} L:${step.low} C:${step.close} BASIS(${priceField.toUpperCase()}):${basisNum}"`,
             pl.toFixed(6),
