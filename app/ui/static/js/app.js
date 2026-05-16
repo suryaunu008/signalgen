@@ -265,10 +265,38 @@ class SignalGenApp {
       .replace(/'/g, "&#039;");
   }
 
+  parseLocalDate(value) {
+    if (!value) return null;
+    if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+    if (typeof value === "number") {
+      const date = new Date(value > 1e12 ? value : value * 1000);
+      return Number.isNaN(date.getTime()) ? null : date;
+    }
+    if (typeof value === "string") {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        return new Date(`${value}T00:00:00`);
+      }
+      const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(value);
+      const normalized = hasTimezone ? value : value.replace(" ", "T");
+      const date = new Date(normalized);
+      return Number.isNaN(date.getTime()) ? null : date;
+    }
+    return null;
+  }
+
+  formatPrice(value, decimals = 2) {
+    const price = Number(value);
+    if (!Number.isFinite(price)) return "-";
+    return price.toLocaleString(undefined, {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    });
+  }
+
   formatDate(value) {
-    const date = value instanceof Date ? value : new Date(value);
-    if (Number.isNaN(date.getTime())) return "Unknown date";
-    return date.toLocaleDateString("en-GB", {
+    const date = this.parseLocalDate(value);
+    if (!date) return "Unknown date";
+    return date.toLocaleDateString(undefined, {
       day: "2-digit",
       month: "2-digit",
       year: "numeric",
@@ -276,14 +304,14 @@ class SignalGenApp {
   }
 
   formatTime(value) {
-    const date = value instanceof Date ? value : new Date(value);
-    if (Number.isNaN(date.getTime())) return "Unknown time";
+    const date = this.parseLocalDate(value);
+    if (!date) return "Unknown time";
     return date.toLocaleTimeString();
   }
 
   formatDateTime(value) {
-    const date = value instanceof Date ? value : new Date(value);
-    if (Number.isNaN(date.getTime())) return "Unknown";
+    const date = this.parseLocalDate(value);
+    if (!date) return "Unknown";
     return `${this.formatDate(date)} ${this.formatTime(date)}`;
   }
 
@@ -758,7 +786,7 @@ class SignalGenApp {
 
     // Handle both 'time' (from DB) and 'timestamp' (from WebSocket) fields
     const signalTime = signal.time || signal.timestamp;
-    const signalDate = signalTime ? new Date(signalTime) : null;
+    const signalDate = this.parseLocalDate(signalTime);
     const dateDisplay = signalDate
       ? this.formatDate(signalDate)
       : "Unknown date";
@@ -770,7 +798,7 @@ class SignalGenApp {
             <div class="flex justify-between items-start gap-3">
                 <div class="flex-1">
                     <h4 class="font-medium text-green-800">${signal.symbol}</h4>
-                    <p class="text-sm text-green-600">Price: $${signal.price}</p>
+                    <p class="text-sm text-green-600">Price: ${this.formatPrice(signal.price)}</p>
                     <p class="text-xs text-green-500">${dateDisplay} • ${timeDisplay}</p>
                 </div>
                 <div class="flex items-center gap-1">
@@ -805,7 +833,7 @@ class SignalGenApp {
     // Show toast notification only if not in silent mode
     if (!silent) {
       this.showToast(
-        `New signal: ${signal.symbol} at $${signal.price}`,
+        `New signal: ${signal.symbol} at ${this.formatPrice(signal.price)}`,
         "success"
       );
     }
@@ -817,7 +845,7 @@ class SignalGenApp {
    * @param {HTMLElement} signalElement - Signal DOM element
    */
   async deleteSignal(signal, signalElement) {
-    if (!confirm(`Delete signal for ${signal.symbol} at $${signal.price}?`)) {
+    if (!confirm(`Delete signal for ${signal.symbol} at ${this.formatPrice(signal.price)}?`)) {
       return;
     }
 
@@ -2249,9 +2277,7 @@ class SignalGenApp {
 
     row.innerHTML = `
       <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${symbol}</td>
-      <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">$${price.toFixed(
-        2
-      )}</td>
+      <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${this.formatPrice(price)}</td>
       <td class="px-6 py-4 whitespace-nowrap text-sm ${changeClass}">
         <span class="change-symbol">${changeSymbol}</span>
         <span class="change-amount">${Math.abs(change).toFixed(2)}</span>
@@ -2286,7 +2312,7 @@ class SignalGenApp {
 
     // Update price cell
     const priceCell = row.children[1];
-    priceCell.textContent = `$${price.toFixed(2)}`;
+    priceCell.textContent = this.formatPrice(price);
 
     // Update change cell with animation
     const changeCell = row.children[2];
@@ -2434,13 +2460,13 @@ class SignalGenApp {
 
       // Populate signal information
       const signalTime = signal.time || signal.timestamp;
-      const signalDate = signalTime ? new Date(signalTime) : null;
+      const signalDate = this.parseLocalDate(signalTime);
 
       document.getElementById("signal-modal-symbol").textContent =
         signal.symbol;
       document.getElementById(
         "signal-modal-price"
-      ).textContent = `$${signal.price}`;
+      ).textContent = this.formatPrice(signal.price);
       document.getElementById("signal-modal-date").textContent = signalDate
         ? this.formatDate(signalDate)
         : "Unknown";

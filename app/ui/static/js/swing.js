@@ -254,11 +254,21 @@ class SwingTradingUI {
     endExclusive.setDate(endExclusive.getDate() + 1);
 
     return {
-      start_date: start.toISOString(),
-      end_date: endExclusive.toISOString(),
+      start_date: this.toLocalIsoDateTime(start),
+      end_date: this.toLocalIsoDateTime(endExclusive),
       display_start: startValue,
       display_end: endValue
     };
+  }
+
+  toLocalIsoDateTime(date) {
+    const yyyy = date.getFullYear();
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const dd = String(date.getDate()).padStart(2, '0');
+    const hh = String(date.getHours()).padStart(2, '0');
+    const min = String(date.getMinutes()).padStart(2, '0');
+    const ss = String(date.getSeconds()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}T${hh}:${min}:${ss}`;
   }
 
   setScreeningState(inProgress) {
@@ -278,9 +288,9 @@ class SwingTradingUI {
   }
 
   formatDate(value) {
-    const date = value instanceof Date ? value : new Date(value);
+    const date = this.parseLocalDate(value);
     if (Number.isNaN(date.getTime())) return '-';
-    return date.toLocaleDateString('en-GB', {
+    return date.toLocaleDateString(undefined, {
       day: '2-digit',
       month: '2-digit',
       year: 'numeric'
@@ -288,9 +298,32 @@ class SwingTradingUI {
   }
 
   formatDateTime(value) {
-    const date = value instanceof Date ? value : new Date(value);
+    const date = this.parseLocalDate(value);
     if (Number.isNaN(date.getTime())) return '-';
     return `${this.formatDate(date)} ${date.toLocaleTimeString()}`;
+  }
+
+  parseLocalDate(value) {
+    if (!value) return new Date(NaN);
+    if (value instanceof Date) return value;
+    if (typeof value === 'number') return new Date(value > 1e12 ? value : value * 1000);
+    if (typeof value === 'string') {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        return new Date(`${value}T00:00:00`);
+      }
+      const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(value);
+      return new Date(hasTimezone ? value : value.replace(' ', 'T'));
+    }
+    return new Date(NaN);
+  }
+
+  formatPrice(value, decimals = 2) {
+    const price = Number(value);
+    if (!Number.isFinite(price)) return '-';
+    return price.toLocaleString(undefined, {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals
+    });
   }
 
   cancelScreening() {
@@ -629,7 +662,7 @@ class SwingTradingUI {
 
       const price = document.createElement('td');
       price.className = 'px-4 py-3 text-sm';
-      price.textContent = Number.isFinite(r.price) ? `$${r.price.toFixed(2)}` : '-';
+      price.textContent = Number.isFinite(r.price) ? this.formatPrice(r.price) : '-';
 
       const timestamp = document.createElement('td');
       timestamp.className = 'px-4 py-3 text-sm';

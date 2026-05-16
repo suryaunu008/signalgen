@@ -671,7 +671,7 @@ class IndicatorEngine:
                 for period in sorted({20} | dynamic['sma_volume'] | dynamic['rel_volume']):
                     if len(df) < period:
                         if not suppress_warnings and period == 20:
-                            self.logger.warning(f"{symbol} Not enough data for SMA_VOLUME_20 (need 20, have {len(df)})")
+                            self.logger.debug(f"{symbol} Not enough data for SMA_VOLUME_20 (need 20, have {len(df)})")
                         continue
 
                     sma_volume = ta.trend.sma_indicator(df['volume'], window=period)
