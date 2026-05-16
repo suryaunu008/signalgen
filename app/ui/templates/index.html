@@ -291,19 +291,6 @@
 
               <div>
                 <label class="block text-sm font-medium text-gray-700 mb-2"
-                  >Logic Operator</label
-                >
-                <select
-                  id="rule-logic"
-                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="AND">AND</option>
-                  <option value="OR">OR</option>
-                </select>
-              </div>
-
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-2"
                   >Signal Type</label
                 >
                 <select
@@ -319,13 +306,19 @@
               </div>
 
               <div>
-                <label class="block text-sm font-medium text-gray-700 mb-2"
-                  >Conditions</label
-                >
-                <div id="conditions-container" class="space-y-2">
-                  <div class="condition-row flex space-x-2">
+                <div class="flex items-center justify-between mb-2">
+                  <label class="block text-sm font-medium text-gray-700"
+                    >Conditions</label
+                  >
+                  <span class="text-xs text-gray-500">Operands follow backend schema</span>
+                </div>
+                <div id="conditions-container" class="space-y-3">
+                  <div class="condition-row rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <div class="grid grid-cols-1 lg:grid-cols-[1fr_150px_1fr_44px] gap-2 items-start">
+                      <div>
+                        <div class="mb-1 text-xs font-semibold uppercase text-gray-500">Left</div>
                     <select
-                      class="condition-left flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      class="condition-left w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                     >
                       <optgroup label="Price & Candle">
                         <option value="PRICE">PRICE</option>
@@ -377,8 +370,11 @@
                         <option value="_CUSTOM_">Custom Number...</option>
                       </optgroup>
                     </select>
+                      </div>
+                      <div>
+                        <div class="mb-1 text-xs font-semibold uppercase text-gray-500">Operator</div>
                     <select
-                      class="condition-op px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      class="condition-op w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                     >
                       <option value=">">></option>
                       <option value="<"><</option>
@@ -387,8 +383,11 @@
                       <option value="CROSS_UP">CROSS_UP</option>
                       <option value="CROSS_DOWN">CROSS_DOWN</option>
                     </select>
+                      </div>
+                      <div>
+                        <div class="mb-1 text-xs font-semibold uppercase text-gray-500">Right</div>
                     <select
-                      class="condition-right flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      class="condition-right w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                     >
                       <optgroup label="Price & Candle">
                         <option value="PRICE">PRICE</option>
@@ -440,12 +439,20 @@
                         <option value="_CUSTOM_">Custom Number...</option>
                       </optgroup>
                     </select>
+                      </div>
+                      <div class="pt-5">
                     <button
                       type="button"
-                      class="remove-condition px-3 py-2 bg-red-500 text-white rounded-md hover:bg-red-600 transition-colors"
+                      class="remove-condition w-11 h-10 bg-red-500 text-white rounded-md hover:bg-red-600 transition-colors"
+                      title="Remove condition"
                     >
                       <i class="fas fa-trash"></i>
                     </button>
+                      </div>
+                    </div>
+                    <div class="condition-summary mt-3 rounded-md bg-white border border-gray-200 px-3 py-2 text-sm font-mono text-gray-700">
+                      PRICE &gt; PRICE
+                    </div>
                   </div>
                 </div>
                 <button
@@ -455,6 +462,11 @@
                 >
                   <i class="fas fa-plus mr-2"></i>Add Condition
                 </button>
+              </div>
+
+              <div class="rounded-lg border border-purple-100 bg-purple-50 p-4">
+                <div class="mb-2 text-xs font-semibold uppercase text-purple-700">Rule Preview</div>
+                <div id="rule-preview" class="font-mono text-sm text-purple-950 break-words">BUY WHEN PRICE &gt; PRICE</div>
               </div>
 
               <div>

@@ -181,7 +181,9 @@ class SignalGenApp {
 
     document.querySelectorAll(".condition-row").forEach((row) => {
       this.populateConditionRowControls(row);
+      this.updateConditionSummary(row);
     });
+    this.updateRulePreview();
   }
 
   populateConditionRowControls(row) {
@@ -342,6 +344,12 @@ class SignalGenApp {
     document
       .getElementById("add-condition")
       .addEventListener("click", () => this.addConditionRow());
+    document
+      .getElementById("rule-builder-form")
+      .addEventListener("input", () => this.updateRulePreview());
+    document
+      .getElementById("rule-builder-form")
+      .addEventListener("change", () => this.updateRulePreview());
 
     // Watchlist manager
     document
@@ -1033,7 +1041,7 @@ class SignalGenApp {
 
     try {
       const name = document.getElementById("rule-name").value.trim();
-      const logic = document.getElementById("rule-logic").value;
+      const logic = "AND";
       const cooldown = parseInt(document.getElementById("rule-cooldown").value);
 
       if (!name) {
@@ -1054,13 +1062,8 @@ class SignalGenApp {
         // Handle custom numeric input for left side
         if (left === "_CUSTOM_") {
           const customInput = row.querySelector(".condition-left-custom");
-          console.log(`DEBUG: Left custom input found: ${!!customInput}`);
 
           if (customInput) {
-            console.log(
-              `DEBUG: Left custom input value: "${customInput.value}"`
-            );
-
             // Validate the custom input
             if (!this.validateCustomInput(customInput)) {
               validationErrors.push(
@@ -1070,11 +1073,7 @@ class SignalGenApp {
             }
 
             left = parseFloat(customInput.value);
-            console.log(`DEBUG: Parsed left value: ${left}`);
           } else {
-            console.error(
-              `DEBUG: ERROR - Left custom input not found in form submission!`
-            );
             validationErrors.push(
               `Condition ${index + 1} left side: Custom input missing`
             );
@@ -1090,13 +1089,8 @@ class SignalGenApp {
         // Handle custom numeric input for right side
         if (right === "_CUSTOM_") {
           const customInput = row.querySelector(".condition-right-custom");
-          console.log(`DEBUG: Right custom input found: ${!!customInput}`);
 
           if (customInput) {
-            console.log(
-              `DEBUG: Right custom input value: "${customInput.value}"`
-            );
-
             // Validate the custom input
             if (!this.validateCustomInput(customInput)) {
               validationErrors.push(
@@ -1106,11 +1100,7 @@ class SignalGenApp {
             }
 
             right = parseFloat(customInput.value);
-            console.log(`DEBUG: Parsed right value: ${right}`);
           } else {
-            console.error(
-              `DEBUG: ERROR - Right custom input not found in form submission!`
-            );
             validationErrors.push(
               `Condition ${index + 1} right side: Custom input missing`
             );
@@ -1181,7 +1171,6 @@ class SignalGenApp {
         },
       };
 
-      console.log("DEBUG: Submitting rule data:", ruleData);
       this.showLoading();
 
       await API.createRule(ruleData);
@@ -1208,7 +1197,6 @@ class SignalGenApp {
    */
   clearRuleForm() {
     document.getElementById("rule-name").value = "";
-    document.getElementById("rule-logic").value = "AND";
     document.getElementById("rule-signal-type").value = "BUY";
     document.getElementById("rule-cooldown").value = "60";
 
@@ -1226,6 +1214,8 @@ class SignalGenApp {
       if (newRow) {
         this.attachConditionRowListeners(newRow);
         this.syncConditionRowForOperator(newRow);
+        this.updateConditionSummary(newRow);
+        this.updateRulePreview();
       }
     }, 0);
   }
@@ -1235,19 +1225,35 @@ class SignalGenApp {
    */
   getConditionRowHTML() {
     return `
-      <div class="condition-row flex space-x-2">
-        <select class="condition-left flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-          ${this.getOperandOptionsHTML()}
-        </select>
-        <select class="condition-op px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-          ${this.getOperatorOptionsHTML()}
-        </select>
-        <select class="condition-right flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-          ${this.getOperandOptionsHTML()}
-        </select>
-        <button type="button" class="remove-condition px-3 py-2 bg-red-500 text-white rounded-md hover:bg-red-600 transition-colors">
-          <i class="fas fa-trash"></i>
-        </button>
+      <div class="condition-row rounded-lg border border-gray-200 bg-gray-50 p-3">
+        <div class="grid grid-cols-1 lg:grid-cols-[1fr_150px_1fr_44px] gap-2 items-start">
+          <div>
+            <div class="mb-1 text-xs font-semibold uppercase text-gray-500">Left</div>
+            <select class="condition-left w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+              ${this.getOperandOptionsHTML()}
+            </select>
+          </div>
+          <div>
+            <div class="mb-1 text-xs font-semibold uppercase text-gray-500">Operator</div>
+            <select class="condition-op w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+              ${this.getOperatorOptionsHTML()}
+            </select>
+          </div>
+          <div>
+            <div class="mb-1 text-xs font-semibold uppercase text-gray-500">Right</div>
+            <select class="condition-right w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+              ${this.getOperandOptionsHTML()}
+            </select>
+          </div>
+          <div class="pt-5">
+            <button type="button" class="remove-condition w-11 h-10 bg-red-500 text-white rounded-md hover:bg-red-600 transition-colors" title="Remove condition">
+              <i class="fas fa-trash"></i>
+            </button>
+          </div>
+        </div>
+        <div class="condition-summary mt-3 rounded-md bg-white border border-gray-200 px-3 py-2 text-sm font-mono text-gray-700">
+          PRICE > PRICE
+        </div>
       </div>
     `;
   }
@@ -1256,61 +1262,45 @@ class SignalGenApp {
    * Attach event listeners to condition row
    */
   attachConditionRowListeners(row) {
-    console.log("DEBUG: attachConditionRowListeners called for row:", row);
     const leftSelect = row.querySelector(".condition-left");
     const opSelect = row.querySelector(".condition-op");
     const rightSelect = row.querySelector(".condition-right");
 
-    console.log("DEBUG: leftSelect found:", !!leftSelect);
-    console.log("DEBUG: opSelect found:", !!opSelect);
-    console.log("DEBUG: rightSelect found:", !!rightSelect);
-
     if (!leftSelect || !opSelect || !rightSelect) {
-      console.error("DEBUG: Could not find select elements in condition row");
       return;
     }
 
     leftSelect.addEventListener("change", (e) => {
-      console.log(
-        "DEBUG: Left select change event triggered, value:",
-        e.target.value
-      );
       if (e.target.value === "_CUSTOM_") {
-        console.log("DEBUG: Calling showCustomInput for left side");
         this.showCustomInput(row, "left");
       } else if (e.target.value === "_CUSTOM_DYNAMIC_") {
         this.showCustomDynamicInput(row, "left");
       } else {
-        console.log("DEBUG: Calling hideCustomInput for left side");
         this.hideCustomInput(row, "left");
         this.hideCustomDynamicInput(row, "left");
       }
       this.syncConditionRowForOperator(row);
+      this.updateConditionSummary(row);
     });
 
     opSelect.addEventListener("change", () => {
       this.syncConditionRowForOperator(row);
+      this.updateConditionSummary(row);
     });
 
     rightSelect.addEventListener("change", (e) => {
-      console.log(
-        "DEBUG: Right select change event triggered, value:",
-        e.target.value
-      );
       if (e.target.value === "_CUSTOM_") {
-        console.log("DEBUG: Calling showCustomInput for right side");
         this.showCustomInput(row, "right");
       } else if (e.target.value === "_CUSTOM_DYNAMIC_") {
         this.showCustomDynamicInput(row, "right");
       } else {
-        console.log("DEBUG: Calling hideCustomInput for right side");
         this.hideCustomInput(row, "right");
         this.hideCustomDynamicInput(row, "right");
       }
       this.syncConditionRowForOperator(row);
+      this.updateConditionSummary(row);
     });
-
-    console.log("DEBUG: Event listeners attached successfully");
+    this.updateConditionSummary(row);
   }
 
   isCrossOperator(operator) {
@@ -1381,32 +1371,20 @@ class SignalGenApp {
    * Show custom numeric input
    */
   showCustomInput(row, side) {
-    console.log(`DEBUG: showCustomInput called for side: ${side}`);
-    console.log(`DEBUG: Row element:`, row);
-
-    // Validate inputs
     if (!row || !side) {
-      console.error(`DEBUG: Invalid inputs - row: ${!!row}, side: ${side}`);
       return;
     }
 
     const select = row.querySelector(`.condition-${side}`);
     const existingInput = row.querySelector(`.condition-${side}-custom`);
 
-    console.log(`DEBUG: Select element found: ${!!select}`);
-    console.log(`DEBUG: Existing input found: ${!!existingInput}`);
-
     if (!select) {
-      console.error(`DEBUG: Select element not found for side: ${side}`);
       return;
     }
 
     this.hideCustomDynamicInput(row, side);
 
     if (existingInput) {
-      console.log(
-        `DEBUG: Custom input already exists for ${side}, focusing it`
-      );
       existingInput.focus();
       existingInput.select();
       return;
@@ -1418,7 +1396,7 @@ class SignalGenApp {
     input.step = "any";
     input.min = "-999999999";
     input.max = "999999999";
-    input.className = `condition-${side}-custom flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500`;
+    input.className = `condition-${side}-custom w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white`;
     input.placeholder = "Enter number";
     input.value = "0";
     input.setAttribute("data-side", side); // Add data attribute for tracking
@@ -1426,13 +1404,10 @@ class SignalGenApp {
     // Create a button to switch back to dropdown
     const switchButton = document.createElement("button");
     switchButton.type = "button";
-    switchButton.className = `condition-${side}-switch px-2 py-2 bg-gray-500 text-white rounded-md hover:bg-gray-600 transition-colors text-xs`;
+    switchButton.className = `condition-${side}-switch mt-2 px-2 py-2 bg-gray-500 text-white rounded-md hover:bg-gray-600 transition-colors text-xs`;
     switchButton.innerHTML = '<i class="fas fa-list"></i>';
     switchButton.title = "Switch to dropdown";
     switchButton.setAttribute("data-side", side);
-
-    console.log(`DEBUG: Created input element:`, input);
-    console.log(`DEBUG: Select parent node:`, select.parentNode);
 
     try {
       // Hide the select dropdown
@@ -1442,29 +1417,21 @@ class SignalGenApp {
       select.parentNode.insertBefore(input, select);
       select.parentNode.insertBefore(switchButton, select);
 
-      console.log(`DEBUG: Successfully inserted custom input for ${side}`);
-
       // Verify the input was added and is properly positioned
       const addedInput = row.querySelector(`.condition-${side}-custom`);
-      console.log(
-        `DEBUG: Verification - Custom input found after insertion: ${!!addedInput}`
-      );
 
       if (!addedInput) {
-        console.error(
-          `DEBUG: ERROR - Custom input not found after insertion for ${side}`
-        );
         return;
       }
 
       // Add validation event listener
       addedInput.addEventListener("input", (e) => {
         this.validateCustomInput(e.target);
+        this.updateConditionSummary(row);
       });
 
       // Add click listener to switch button
       switchButton.addEventListener("click", () => {
-        console.log(`DEBUG: Switch button clicked for ${side}`);
         this.switchToDropdown(row, side);
       });
 
@@ -1474,23 +1441,19 @@ class SignalGenApp {
         addedInput.select();
       }, 0);
     } catch (error) {
-      console.error(`DEBUG: Error inserting custom input for ${side}:`, error);
       // Restore select visibility on error
       if (select) {
         select.style.display = "";
       }
     }
+    this.updateConditionSummary(row);
   }
 
   /**
    * Hide custom numeric input
    */
   hideCustomInput(row, side) {
-    console.log(`DEBUG: hideCustomInput called for side: ${side}`);
-
-    // Validate inputs
     if (!row || !side) {
-      console.error(`DEBUG: Invalid inputs - row: ${!!row}, side: ${side}`);
       return;
     }
 
@@ -1498,70 +1461,35 @@ class SignalGenApp {
     const switchButton = row.querySelector(`.condition-${side}-switch`);
     const select = row.querySelector(`.condition-${side}`);
 
-    console.log(`DEBUG: Input element found: ${!!input}`);
-    console.log(`DEBUG: Switch button found: ${!!switchButton}`);
-    console.log(`DEBUG: Select element found: ${!!select}`);
-
     if (input) {
-      try {
-        // Remove the input element (event listeners are automatically removed)
-        input.remove();
-        console.log(`DEBUG: Removed custom input for ${side}`);
-      } catch (error) {
-        console.error(`DEBUG: Error removing custom input for ${side}:`, error);
-      }
-    } else {
-      console.log(`DEBUG: No custom input to remove for ${side}`);
+      input.remove();
     }
 
     if (switchButton) {
-      try {
-        // Remove the switch button
-        switchButton.remove();
-        console.log(`DEBUG: Removed switch button for ${side}`);
-      } catch (error) {
-        console.error(
-          `DEBUG: Error removing switch button for ${side}:`,
-          error
-        );
-      }
+      switchButton.remove();
     }
 
     if (select) {
-      try {
-        // Restore select visibility
-        select.style.display = "";
-        console.log(`DEBUG: Restored select display for ${side}`);
+      select.style.display = "";
 
-        // If select is still on _CUSTOM_ after hiding input, reset to first valid option
-        if (select.value === "_CUSTOM_") {
-          // Find first non-custom option
-          const firstOption = Array.from(select.options).find(
-            (opt) => opt.value !== "_CUSTOM_"
-          );
-          if (firstOption) {
-            select.value = firstOption.value;
-            console.log(
-              `DEBUG: Reset select from _CUSTOM_ to ${firstOption.value}`
-            );
-          }
+      // If select is still on _CUSTOM_ after hiding input, reset to first valid option
+      if (select.value === "_CUSTOM_") {
+        const firstOption = Array.from(select.options).find(
+          (opt) => opt.value !== "_CUSTOM_"
+        );
+        if (firstOption) {
+          select.value = firstOption.value;
         }
-      } catch (error) {
-        console.error(`DEBUG: Error restoring select for ${side}:`, error);
       }
-    } else {
-      console.log(`DEBUG: No select element to restore for ${side}`);
     }
+    this.updateConditionSummary(row);
   }
 
   /**
    * Switch from custom input back to dropdown
    */
   switchToDropdown(row, side) {
-    console.log(`DEBUG: switchToDropdown called for side: ${side}`);
-
     if (!row || !side) {
-      console.error(`DEBUG: Invalid inputs - row: ${!!row}, side: ${side}`);
       return;
     }
 
@@ -1572,17 +1500,14 @@ class SignalGenApp {
 
     if (input) {
       input.remove();
-      console.log(`DEBUG: Removed custom input for ${side}`);
     }
 
     if (dynamicWrapper) {
       dynamicWrapper.remove();
-      console.log(`DEBUG: Removed custom dynamic input for ${side}`);
     }
 
     if (switchButton) {
       switchButton.remove();
-      console.log(`DEBUG: Removed switch button for ${side}`);
     }
 
     if (select) {
@@ -1594,8 +1519,8 @@ class SignalGenApp {
         select.value = firstOption.value;
       }
       select.style.display = "";
-      console.log(`DEBUG: Restored dropdown for ${side}`);
     }
+    this.updateConditionSummary(row);
   }
 
   /**
@@ -1639,27 +1564,23 @@ class SignalGenApp {
    * Add condition row to rule builder
    */
   addConditionRow() {
-    console.log("DEBUG: addConditionRow called");
     const container = document.getElementById("conditions-container");
-    console.log("DEBUG: Conditions container found:", !!container);
+    if (!container) return;
 
     // Create a temporary div to hold the HTML
     const tempDiv = document.createElement("div");
     tempDiv.innerHTML = this.getConditionRowHTML();
     const actualRow = tempDiv.firstElementChild;
 
-    console.log("DEBUG: Created new condition row:", actualRow);
-    console.log("DEBUG: Row HTML:", tempDiv.innerHTML);
-
     // Append the row to the container
     container.appendChild(actualRow);
-    console.log("DEBUG: Row appended to container");
 
     // Use setTimeout to ensure DOM is fully updated before attaching listeners
     setTimeout(() => {
       this.attachConditionRowListeners(actualRow);
       this.syncConditionRowForOperator(actualRow);
-      console.log("DEBUG: Event listeners attached to new row");
+      this.updateConditionSummary(actualRow);
+      this.updateRulePreview();
     }, 0);
   }
 
@@ -1676,10 +1597,10 @@ class SignalGenApp {
 
     const bounds = this.ruleSchema?.dynamic_parameter_bounds || { min: 1, max: 250 };
     const wrapper = document.createElement("div");
-    wrapper.className = `condition-${side}-dynamic-wrap flex-1 flex gap-2`;
+    wrapper.className = `condition-${side}-dynamic-wrap grid grid-cols-[1fr_96px] gap-2`;
 
     const typeSelect = document.createElement("select");
-    typeSelect.className = `condition-${side}-dynamic-type flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500`;
+    typeSelect.className = `condition-${side}-dynamic-type w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white`;
     typeSelect.innerHTML = `
       <option value="PRICE_PREV">PRICE_PREV_N</option>
       <option value="MA">MA&lt;N&gt;</option>
@@ -1696,12 +1617,12 @@ class SignalGenApp {
     periodInput.max = String(bounds.max || 250);
     periodInput.step = "1";
     periodInput.value = "20";
-    periodInput.className = `condition-${side}-dynamic-period w-24 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500`;
+    periodInput.className = `condition-${side}-dynamic-period w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white`;
     periodInput.title = `Period (${periodInput.min}-${periodInput.max})`;
 
     const switchButton = document.createElement("button");
     switchButton.type = "button";
-    switchButton.className = `condition-${side}-switch px-2 py-2 bg-gray-500 text-white rounded-md hover:bg-gray-600 transition-colors text-xs`;
+    switchButton.className = `condition-${side}-switch mt-2 px-2 py-2 bg-gray-500 text-white rounded-md hover:bg-gray-600 transition-colors text-xs`;
     switchButton.innerHTML = '<i class="fas fa-list"></i>';
     switchButton.title = "Switch to dropdown";
 
@@ -1711,8 +1632,13 @@ class SignalGenApp {
     select.parentNode.insertBefore(wrapper, select);
     select.parentNode.insertBefore(switchButton, select);
 
-    periodInput.addEventListener("input", () => this.validateDynamicPeriodInput(periodInput));
+    typeSelect.addEventListener("change", () => this.updateConditionSummary(row));
+    periodInput.addEventListener("input", () => {
+      this.validateDynamicPeriodInput(periodInput);
+      this.updateConditionSummary(row);
+    });
     switchButton.addEventListener("click", () => this.switchToDropdown(row, side));
+    this.updateConditionSummary(row);
   }
 
   hideCustomDynamicInput(row, side) {
@@ -1727,6 +1653,7 @@ class SignalGenApp {
     if (select && select.value === "_CUSTOM_DYNAMIC_") {
       select.style.display = "";
     }
+    this.updateConditionSummary(row);
   }
 
   validateDynamicPeriodInput(input) {
@@ -1762,6 +1689,54 @@ class SignalGenApp {
     return `${type}${period}`;
   }
 
+  getOperandPreview(row, side) {
+    const select = row.querySelector(`.condition-${side}`);
+    if (!select) return "-";
+
+    if (select.value === "_CUSTOM_") {
+      const input = row.querySelector(`.condition-${side}-custom`);
+      return input && input.value !== "" ? input.value : "NUMBER";
+    }
+
+    if (select.value === "_CUSTOM_DYNAMIC_") {
+      const typeSelect = row.querySelector(`.condition-${side}-dynamic-type`);
+      const periodInput = row.querySelector(`.condition-${side}-dynamic-period`);
+      const type = typeSelect?.value || "EMA";
+      const period = periodInput?.value || "N";
+      if (type === "PRICE_PREV") return `PRICE_PREV_${period}`;
+      if (type === "SMA_VOLUME") return `SMA_VOLUME_${period}`;
+      if (type === "REL_VOLUME") return `REL_VOLUME_${period}`;
+      return `${type}${period}`;
+    }
+
+    return select.value || "-";
+  }
+
+  getConditionPreview(row) {
+    const op = row.querySelector(".condition-op")?.value || ">";
+    return `${this.getOperandPreview(row, "left")} ${op} ${this.getOperandPreview(row, "right")}`;
+  }
+
+  updateConditionSummary(row) {
+    if (!row) return;
+    const summary = row.querySelector(".condition-summary");
+    if (summary) {
+      summary.textContent = this.getConditionPreview(row);
+    }
+    this.updateRulePreview();
+  }
+
+  updateRulePreview() {
+    const preview = document.getElementById("rule-preview");
+    if (!preview) return;
+
+    const signalType = document.getElementById("rule-signal-type")?.value || "BUY";
+    const conditions = Array.from(document.querySelectorAll(".condition-row"))
+      .map((row) => this.getConditionPreview(row))
+      .filter(Boolean);
+    preview.textContent = `${signalType} WHEN ${conditions.join(" AND ") || "NO CONDITIONS"}`;
+  }
+
   isDynamicCrossableOperand(operand) {
     return /^(MA|EMA|RSI|ADX)\d+$/.test(operand) || /^(SMA_VOLUME|REL_VOLUME)_\d+$/.test(operand);
   }
@@ -1775,6 +1750,7 @@ class SignalGenApp {
       // Clean up custom inputs before removing the row
       this.cleanupConditionRow(row);
       row.remove();
+      this.updateRulePreview();
     } else {
       this.showToast("At least one condition is required", "error");
     }
