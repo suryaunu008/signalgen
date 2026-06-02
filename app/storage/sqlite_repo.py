@@ -33,7 +33,7 @@ import sqlite3
 import json
 import threading
 from typing import Dict, List, Optional, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 
 class SQLiteRepository:
@@ -174,11 +174,34 @@ class SQLiteRepository:
                     updated_at TEXT NOT NULL
                 )
             ''')
+
+            # Create price candle cache table for historical OHLCV data
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS price_candles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    data_source TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    timeframe TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    open REAL NOT NULL,
+                    high REAL NOT NULL,
+                    low REAL NOT NULL,
+                    close REAL NOT NULL,
+                    volume INTEGER DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(data_source, symbol, timeframe, timestamp)
+                )
+            ''')
             
             # Create indexes for backtesting tables
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_backtest_runs_created_at ON backtest_runs(created_at)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_backtest_signals_timestamp ON backtest_signals(timestamp)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_backtest_signals_run_id ON backtest_signals(backtest_run_id)')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_price_candles_lookup
+                ON price_candles(data_source, symbol, timeframe, timestamp)
+            ''')
             
             conn.commit()
             self.logger.info("Database initialized successfully")
@@ -194,6 +217,178 @@ class SQLiteRepository:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
+
+    @staticmethod
+    def _normalize_candle_timestamp(value: Any) -> str:
+        """Normalize candle timestamps to UTC-naive ISO strings for stable range queries."""
+        if isinstance(value, datetime):
+            dt = value
+        elif isinstance(value, (int, float)):
+            dt = datetime.fromtimestamp(value, tz=timezone.utc)
+        elif isinstance(value, str):
+            dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        else:
+            raise ValueError(f"Unsupported candle timestamp value: {value!r}")
+
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt.isoformat()
+
+    @staticmethod
+    def _parse_candle_timestamp(value: str) -> datetime:
+        """Parse stored UTC-naive ISO timestamp values back to datetime objects."""
+        return datetime.fromisoformat(value)
+
+    def get_cached_candles(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_date: datetime,
+        end_date: datetime,
+        data_source: str = "yahoo"
+    ) -> List[Dict[str, Any]]:
+        """
+        Get cached OHLCV candles for a symbol/timeframe/date range.
+
+        Range semantics match data source calls: start inclusive, end exclusive.
+        """
+        start_iso = self._normalize_candle_timestamp(start_date)
+        end_iso = self._normalize_candle_timestamp(end_date)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT timestamp, open, high, low, close, volume
+                FROM price_candles
+                WHERE data_source = ?
+                  AND symbol = ?
+                  AND timeframe = ?
+                  AND timestamp >= ?
+                  AND timestamp < ?
+                ORDER BY timestamp ASC
+            ''', (
+                data_source.lower(),
+                symbol.upper(),
+                timeframe,
+                start_iso,
+                end_iso
+            ))
+            rows = cursor.fetchall()
+
+        return [
+            {
+                'timestamp': self._parse_candle_timestamp(row['timestamp']),
+                'open': float(row['open']),
+                'high': float(row['high']),
+                'low': float(row['low']),
+                'close': float(row['close']),
+                'volume': int(row['volume'] or 0)
+            }
+            for row in rows
+        ]
+
+    def get_price_cache_coverage(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_date: datetime,
+        end_date: datetime,
+        data_source: str = "yahoo"
+    ) -> Dict[str, Any]:
+        """
+        Return lightweight cache coverage metadata for a symbol/timeframe/range.
+
+        Range semantics match candle reads: start inclusive, end exclusive.
+        """
+        start_iso = self._normalize_candle_timestamp(start_date)
+        end_iso = self._normalize_candle_timestamp(end_date)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT
+                    COUNT(*) AS candle_count,
+                    MIN(timestamp) AS first_timestamp,
+                    MAX(timestamp) AS last_timestamp,
+                    MAX(updated_at) AS last_updated_at
+                FROM price_candles
+                WHERE data_source = ?
+                  AND symbol = ?
+                  AND timeframe = ?
+                  AND timestamp >= ?
+                  AND timestamp < ?
+            ''', (
+                data_source.lower(),
+                symbol.upper(),
+                timeframe,
+                start_iso,
+                end_iso
+            ))
+            row = cursor.fetchone()
+
+        if not row or not row['candle_count']:
+            return {
+                'candle_count': 0,
+                'first_timestamp': None,
+                'last_timestamp': None,
+                'last_updated_at': None,
+            }
+
+        return {
+            'candle_count': int(row['candle_count']),
+            'first_timestamp': self._parse_candle_timestamp(row['first_timestamp']),
+            'last_timestamp': self._parse_candle_timestamp(row['last_timestamp']),
+            'last_updated_at': self._parse_candle_timestamp(row['last_updated_at']),
+        }
+
+    def upsert_candles(
+        self,
+        symbol: str,
+        timeframe: str,
+        candles: List[Dict[str, Any]],
+        data_source: str = "yahoo"
+    ) -> int:
+        """
+        Insert or update cached OHLCV candles.
+
+        Returns the number of candle rows submitted for upsert.
+        """
+        if not candles:
+            return 0
+
+        now_iso = datetime.utcnow().isoformat()
+        rows = []
+        for candle in candles:
+            rows.append((
+                data_source.lower(),
+                symbol.upper(),
+                timeframe,
+                self._normalize_candle_timestamp(candle['timestamp']),
+                float(candle['open']),
+                float(candle['high']),
+                float(candle['low']),
+                float(candle['close']),
+                int(candle.get('volume', 0) or 0),
+                now_iso,
+                now_iso
+            ))
+
+        with self._lock:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.executemany('''
+                    INSERT INTO price_candles
+                    (data_source, symbol, timeframe, timestamp, open, high, low, close, volume, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(data_source, symbol, timeframe, timestamp) DO UPDATE SET
+                        open = excluded.open,
+                        high = excluded.high,
+                        low = excluded.low,
+                        close = excluded.close,
+                        volume = excluded.volume,
+                        updated_at = excluded.updated_at
+                ''', rows)
+                conn.commit()
+
+        return len(rows)
     
     # Rules operations
     def create_rule(self, name: str, rule_type: str, definition: Dict, is_system: bool = False) -> int:
@@ -816,6 +1011,10 @@ class SQLiteRepository:
             # Count ticker universes
             cursor.execute('SELECT COUNT(*) FROM ticker_universes')
             stats['total_ticker_universes'] = cursor.fetchone()[0]
+
+            # Count cached price candles
+            cursor.execute('SELECT COUNT(*) FROM price_candles')
+            stats['total_price_candles'] = cursor.fetchone()[0]
             
             return stats
     

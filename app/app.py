@@ -160,6 +160,7 @@ class ManualBacktestEntry(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=20)
     entry_time: str = Field(...)  # ISO datetime string
     signal_type: Optional[str] = Field(default='BUY', pattern='^(BUY|SELL)$')
+    entry_price: Optional[float] = Field(None, gt=0)
 
 class BacktestScreenRequest(BaseModel):
     """Model for new backtesting screen request (rule/manual)."""
@@ -167,7 +168,9 @@ class BacktestScreenRequest(BaseModel):
     timeframe: str = Field(..., pattern='^(1m|5m|15m|1h|4h|1d)$')
     n_steps: int = Field(..., ge=1, le=100)
     data_source: str = Field(..., pattern='^(ibkr|yahoo)$')
-    pl_basis: str = Field(default='close', pattern='^(open|high|low|close)$')
+    entry_price_basis: str = Field(default='close', pattern='^(open|high|low|close)$')
+    exit_price_basis: str = Field(default='close', pattern='^(open|high|low|close)$')
+    pl_basis: Optional[str] = Field(default=None, pattern='^(open|high|low|close)$')
     rule_id: Optional[int] = Field(None, gt=0)
     start_at: Optional[str] = Field(None)  # ISO datetime string
     end_at: Optional[str] = Field(None)    # ISO datetime string
@@ -479,7 +482,11 @@ class SignalGenApp:
             """Get supported rule operands, operators, and logic values."""
             try:
                 operand_groups = {
-                    "Price & Candle": ["PRICE", "PREV_CLOSE", "PREV_OPEN"],
+                    "Price & Candle": [
+                        "PRICE", "OPEN", "HIGH", "LOW", "CLOSE",
+                        "PREV_CLOSE", "PREV_OPEN",
+                        "OPEN_PREV", "HIGH_PREV", "LOW_PREV", "CLOSE_PREV",
+                    ],
                     "Simple Moving Averages": [
                         "MA20", "MA50", "MA100", "MA200",
                         "MA20_PREV", "MA50_PREV", "MA100_PREV", "MA200_PREV",
@@ -507,7 +514,7 @@ class SignalGenApp:
                         "ICHIMOKU_CONVERSION_PREV", "ICHIMOKU_BASE_PREV",
                         "ICHIMOKU_A_PREV", "ICHIMOKU_B_PREV",
                     ],
-                    "Volume": ["VOLUME", "SMA_VOLUME_20", "REL_VOLUME_20"],
+                    "Volume": ["VOLUME", "SMA_VOLUME_20"],
                     "Calculated Metrics": ["PRICE_EMA20_DIFF_PCT"],
                 }
                 supported = self.rule_engine.SUPPORTED_OPERANDS
@@ -515,13 +522,38 @@ class SignalGenApp:
                     group: [operand for operand in operands if operand in supported]
                     for group, operands in operand_groups.items()
                 }
+                quick_operand_groups = {
+                    group: [
+                        operand for operand in operands
+                        if (
+                            operand
+                            and not operand.endswith("_PREV")
+                            and not operand.startswith("PREV_")
+                        )
+                    ]
+                    for group, operands in filtered_groups.items()
+                }
+                quick_operands = {
+                    operand
+                    for operands in quick_operand_groups.values()
+                    for operand in operands
+                }
                 return JSONResponse(content={
-                    "operand_groups": filtered_groups,
+                    "operand_groups": quick_operand_groups,
+                    "prev_n_base_operand_groups": quick_operand_groups,
+                    "legacy_operands": sorted(supported - quick_operands),
                     "operands": sorted(supported),
                     "dynamic_operand_templates": [
                         {
                             "value": "PRICE_PREV_{n}",
-                            "label": "Historical Close Price",
+                            "label": "Historical Close Price (legacy)",
+                            "parameter": "n",
+                            "min": self.rule_engine.MIN_DYNAMIC_PERIOD,
+                            "max": self.rule_engine.MAX_DYNAMIC_PERIOD,
+                        },
+                        {
+                            "value": "{operand}_PREV_{n}",
+                            "label": "Previous Value for Any Indicator",
                             "parameter": "n",
                             "min": self.rule_engine.MIN_DYNAMIC_PERIOD,
                             "max": self.rule_engine.MAX_DYNAMIC_PERIOD,
@@ -557,13 +589,6 @@ class SignalGenApp:
                         {
                             "value": "SMA_VOLUME_{period}",
                             "label": "Volume SMA",
-                            "parameter": "period",
-                            "min": self.rule_engine.MIN_DYNAMIC_PERIOD,
-                            "max": self.rule_engine.MAX_DYNAMIC_PERIOD,
-                        },
-                        {
-                            "value": "REL_VOLUME_{period}",
-                            "label": "Relative Volume",
                             "parameter": "period",
                             "min": self.rule_engine.MIN_DYNAMIC_PERIOD,
                             "max": self.rule_engine.MAX_DYNAMIC_PERIOD,
@@ -1285,7 +1310,7 @@ class SignalGenApp:
             - manual: user-provided entry timestamps
             """
             try:
-                from .data_sources import IBKRDataSource, YahooDataSource
+                from .data_sources import CachedDataSource, IBKRDataSource, YahooDataSource
                 from .core.rule_engine import RuleEngine
                 from .core.indicator_engine import IndicatorEngine
                 from datetime import timezone
@@ -1334,6 +1359,11 @@ class SignalGenApp:
                     pl_pct = 0 if entry_price == 0 else (pl / entry_price) * 100
                     return {"pl": pl, "pl_pct": pl_pct}
 
+                def _basis_price(candle: Dict[str, Any], basis: str) -> float:
+                    if basis not in {"open", "high", "low", "close"}:
+                        raise ValueError(f"Unsupported price basis: {basis}")
+                    return float(candle[basis])
+
                 def _empty_step_metrics(step: int) -> Dict[str, Any]:
                     return {
                         "step": step,
@@ -1357,7 +1387,10 @@ class SignalGenApp:
                         "profit_factor": None
                     }
 
-                def _calculate_metrics(rows: List[Dict[str, Any]], n_steps: int, pl_basis: str) -> Dict[str, Any]:
+                exit_price_basis = request.pl_basis or request.exit_price_basis or 'close'
+                entry_price_basis = request.entry_price_basis or 'close'
+
+                def _calculate_metrics(rows: List[Dict[str, Any]], n_steps: int, exit_basis: str) -> Dict[str, Any]:
                     per_step = []
                     by_symbol: Dict[str, Dict[str, Any]] = {}
 
@@ -1441,7 +1474,8 @@ class SignalGenApp:
 
                     final_step_metrics = per_step[-1] if per_step else _empty_step_metrics(n_steps)
                     return {
-                        "pl_basis": pl_basis,
+                        "pl_basis": exit_basis,
+                        "exit_price_basis": exit_basis,
                         "final_horizon": final_label,
                         "total_entries": len(rows),
                         "final": final_step_metrics,
@@ -1465,7 +1499,11 @@ class SignalGenApp:
                 if request.data_source == 'ibkr':
                     data_source = IBKRDataSource()
                 else:
-                    data_source = YahooDataSource()
+                    data_source = CachedDataSource(
+                        YahooDataSource(),
+                        self.repository,
+                        data_source_name='yahoo'
+                    )
 
                 # Resolve symbols
                 symbols = [s.upper().strip() for s in (request.symbols or []) if s and s.strip()]
@@ -1555,7 +1593,8 @@ class SignalGenApp:
                                     "symbol": symbol,
                                     "entry_time": ts if isinstance(ts, datetime) else datetime.fromtimestamp(ts_unix),
                                     "display_time": _wall_clock_iso(raw_ts) if isinstance(raw_ts, datetime) else None,
-                                    "entry_price": float(candle['close']),
+                                    "entry_price": _basis_price(candle, entry_price_basis),
+                                    "entry_price_basis": entry_price_basis,
                                     "signal_type": str(rule_to_evaluate.get('signal_type', 'BUY')).upper(),
                                     "source": "rule"
                                 })
@@ -1572,7 +1611,8 @@ class SignalGenApp:
                             "symbol": item.symbol.upper().strip(),
                             "entry_time": entry_time,
                             "display_time": None,
-                            "entry_price": None,
+                            "entry_price": float(item.entry_price) if item.entry_price is not None else None,
+                            "entry_price_basis": "manual" if item.entry_price is not None else entry_price_basis,
                             "signal_type": (item.signal_type or "BUY").upper(),
                             "source": "manual"
                         })
@@ -1604,7 +1644,8 @@ class SignalGenApp:
                         continue
 
                     entry_candle = candles[idx]
-                    entry_price = entry["entry_price"] if entry["entry_price"] is not None else float(entry_candle['close'])
+                    entry_basis = entry.get("entry_price_basis") or entry_price_basis
+                    entry_price = entry["entry_price"] if entry["entry_price"] is not None else _basis_price(entry_candle, entry_price_basis)
 
                     step_values = {}
                     signal_type = str(entry.get("signal_type", "BUY")).upper()
@@ -1614,7 +1655,7 @@ class SignalGenApp:
                             step_values[f"T+{step}"] = None
                             continue
                         c = candles[ci]
-                        basis_price = float(c[request.pl_basis])
+                        basis_price = _basis_price(c, exit_price_basis)
                         trade_pl = _calculate_trade_pl(signal_type, float(entry_price), basis_price)
                         step_values[f"T+{step}"] = {
                             "time": _wall_clock_iso(c['timestamp']) if isinstance(c['timestamp'], datetime) else str(c['timestamp']),
@@ -1622,8 +1663,10 @@ class SignalGenApp:
                             "high": float(c['high']),
                             "low": float(c['low']),
                             "close": float(c['close']),
-                            "basis": request.pl_basis,
+                            "basis": exit_price_basis,
+                            "exit_price_basis": exit_price_basis,
                             "basis_price": basis_price,
+                            "exit_price": basis_price,
                             "pl": trade_pl["pl"],
                             "pl_pct": trade_pl["pl_pct"]
                         }
@@ -1633,17 +1676,20 @@ class SignalGenApp:
                         "signal_type": signal_type,
                         "entry_time": entry.get("display_time") or _utc_iso(entry_time),
                         "entry_price": float(entry_price),
+                        "entry_price_basis": entry_basis,
                         "source": entry["source"],
                         "steps": step_values
                     })
 
-                metrics = _calculate_metrics(rows, request.n_steps, request.pl_basis)
+                metrics = _calculate_metrics(rows, request.n_steps, exit_price_basis)
 
                 return {
                     "mode": request.mode,
                     "timeframe": request.timeframe,
                     "n_steps": request.n_steps,
-                    "pl_basis": request.pl_basis,
+                    "entry_price_basis": entry_price_basis,
+                    "exit_price_basis": exit_price_basis,
+                    "pl_basis": exit_price_basis,
                     "row_count": len(rows),
                     "metrics": metrics,
                     "rows": rows
@@ -1679,7 +1725,7 @@ class SignalGenApp:
             try:
                 from datetime import datetime
                 from .engines.backtesting_engine import BacktestingEngine
-                from .data_sources import IBKRDataSource, YahooDataSource
+                from .data_sources import CachedDataSource, IBKRDataSource, YahooDataSource
                 
                 # Parse dates
                 start_date = datetime.fromisoformat(request.start_date.replace('Z', '+00:00'))
@@ -1689,7 +1735,11 @@ class SignalGenApp:
                 if request.data_source == 'ibkr':
                     data_source = IBKRDataSource()
                 else:
-                    data_source = YahooDataSource()
+                    data_source = CachedDataSource(
+                        YahooDataSource(),
+                        self.repository,
+                        data_source_name='yahoo'
+                    )
                 
                 # Create engine
                 engine = BacktestingEngine(
@@ -1790,6 +1840,269 @@ class SignalGenApp:
         # SWING TRADING API ENDPOINTS
         # ============================================================
         
+        @self.app.get("/api/swing/chart")
+        async def get_swing_chart(
+            symbol: str,
+            timeframe: str,
+            timestamp: str,
+            rule_id: int,
+            before: int = 80,
+            after: int = 40
+        ):
+            """Get candle and rule-indicator series for a screener result chart."""
+            try:
+                import math
+                import pandas as pd
+                import ta
+                from datetime import timezone
+                from .data_sources import CachedDataSource, YahooDataSource
+
+                if timeframe not in {"1h", "4h", "1d"}:
+                    raise ValueError("timeframe must be one of: 1h, 4h, 1d")
+                before = min(250, max(10, before))
+                after = min(120, max(0, after))
+                symbol = symbol.upper().strip()
+                if not symbol:
+                    raise ValueError("symbol is required")
+
+                rule = self.repository.get_rule(rule_id)
+                if not rule:
+                    raise ValueError(f"Rule with ID {rule_id} not found")
+
+                signal_dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                if signal_dt.tzinfo is not None:
+                    signal_dt = signal_dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+                rule_to_evaluate = {**rule, **rule['definition']}
+                operands = RuleEngine.extract_required_operands(rule_to_evaluate)
+                base_operands = set()
+                for operand in operands:
+                    if not isinstance(operand, str) or RuleEngine._is_numeric_literal(operand):
+                        continue
+                    prev_n = RuleEngine.parse_prev_n_operand(operand)
+                    if prev_n:
+                        base_operands.add(prev_n["base"])
+                    elif operand.endswith("_PREV"):
+                        base_operands.add(operand[:-5])
+                    else:
+                        base_operands.add(operand)
+                base_operands = sorted(base_operands)
+
+                total_bars = before + after + RuleEngine.estimate_rule_warmup(rule_to_evaluate, default=80)
+                if timeframe == "1d":
+                    fetch_days = (total_bars * 2) + 10
+                elif timeframe == "4h":
+                    fetch_days = max(60, total_bars // 2 + 20)
+                else:
+                    fetch_days = max(30, total_bars // 4 + 14)
+
+                data_source = CachedDataSource(
+                    YahooDataSource(),
+                    self.repository,
+                    data_source_name='yahoo'
+                )
+                candles = await data_source.fetch_historical_data(
+                    symbol=symbol,
+                    start_date=signal_dt - timedelta(days=fetch_days),
+                    end_date=signal_dt + timedelta(days=fetch_days),
+                    timeframe=timeframe
+                )
+                if not candles:
+                    raise ValueError("No chart data available")
+
+                def _normalize_dt(value: Any) -> datetime:
+                    if isinstance(value, datetime):
+                        if value.tzinfo is not None:
+                            return value.astimezone(timezone.utc).replace(tzinfo=None)
+                        return value
+                    return datetime.fromtimestamp(float(value))
+
+                indexed = [(idx, _normalize_dt(candle['timestamp']), candle) for idx, candle in enumerate(candles)]
+                nearest_idx, _, _ = min(
+                    indexed,
+                    key=lambda item: abs((item[1] - signal_dt).total_seconds())
+                )
+                start_idx = max(0, nearest_idx - before)
+                end_idx = min(len(candles), nearest_idx + after + 1)
+                visible_candles = candles[start_idx:end_idx]
+
+                df = pd.DataFrame({
+                    'timestamp': [_normalize_dt(c['timestamp']) for c in candles],
+                    'open': [float(c['open']) for c in candles],
+                    'high': [float(c['high']) for c in candles],
+                    'low': [float(c['low']) for c in candles],
+                    'close': [float(c['close']) for c in candles],
+                    'volume': [float(c.get('volume', 0) or 0) for c in candles],
+                })
+
+                def _chart_time(value: datetime) -> int:
+                    return int(value.replace(tzinfo=timezone.utc).timestamp())
+
+                def _series_points(values) -> List[Dict[str, Any]]:
+                    points = []
+                    for idx in range(start_idx, end_idx):
+                        value = values.iloc[idx] if hasattr(values, "iloc") else values[idx]
+                        if value is None or pd.isna(value):
+                            continue
+                        numeric = float(value)
+                        if not math.isfinite(numeric):
+                            continue
+                        points.append({
+                            "time": _chart_time(df['timestamp'].iloc[idx]),
+                            "value": numeric
+                        })
+                    return points
+
+                def _series_from_operand(operand: str) -> Optional[Dict[str, Any]]:
+                    base = operand[:-5] if operand.endswith("_PREV") else operand
+                    parsed = RuleEngine.parse_dynamic_operand(base)
+                    panel = "overlay"
+                    series_type = "line"
+                    values = None
+
+                    if base in {"PRICE", "PREV_CLOSE", "PREV_OPEN"} or base.startswith("PRICE_PREV_"):
+                        return None
+                    if parsed:
+                        period = parsed["period"]
+                        operand_type = parsed["type"]
+                        if operand_type == "MA_N":
+                            values = ta.trend.sma_indicator(df['close'], window=period)
+                        elif operand_type == "EMA_N":
+                            values = ta.trend.ema_indicator(df['close'], window=period)
+                        elif operand_type == "RSI_N":
+                            values = ta.momentum.rsi(df['close'], window=period)
+                            panel = "oscillator"
+                        elif operand_type == "ADX_N":
+                            values = ta.trend.adx(df['high'], df['low'], df['close'], window=period)
+                            panel = "oscillator"
+                        elif operand_type == "SMA_VOLUME_N":
+                            values = ta.trend.sma_indicator(df['volume'], window=period)
+                            panel = "volume"
+                        elif operand_type == "REL_VOLUME_N":
+                            sma_volume = ta.trend.sma_indicator(df['volume'], window=period)
+                            values = df['volume'] / sma_volume.where(sma_volume != 0)
+                            panel = "volume"
+                        else:
+                            return None
+                    elif base.startswith("MA") and base[2:].isdigit():
+                        values = ta.trend.sma_indicator(df['close'], window=int(base[2:]))
+                    elif base.startswith("EMA") and base[3:].isdigit():
+                        values = ta.trend.ema_indicator(df['close'], window=int(base[3:]))
+                    elif base.startswith("RSI") and base[3:].isdigit():
+                        values = ta.momentum.rsi(df['close'], window=int(base[3:]))
+                        panel = "oscillator"
+                    elif base.startswith("ADX") and base[3:].isdigit():
+                        values = ta.trend.adx(df['high'], df['low'], df['close'], window=int(base[3:]))
+                        panel = "oscillator"
+                    elif base == "MACD":
+                        values = ta.trend.macd(df['close'])
+                        panel = "macd"
+                    elif base == "MACD_SIGNAL":
+                        values = ta.trend.macd_signal(df['close'])
+                        panel = "macd"
+                    elif base == "MACD_HIST":
+                        values = ta.trend.macd_diff(df['close'])
+                        panel = "macd"
+                        series_type = "histogram"
+                    elif base in {"BB_UPPER", "BB_MIDDLE", "BB_LOWER"}:
+                        if base == "BB_UPPER":
+                            values = ta.volatility.bollinger_hband(df['close'])
+                        elif base == "BB_MIDDLE":
+                            values = ta.volatility.bollinger_mavg(df['close'])
+                        else:
+                            values = ta.volatility.bollinger_lband(df['close'])
+                    elif base == "STOCH_K":
+                        values = ta.momentum.stoch(df['high'], df['low'], df['close'])
+                        panel = "oscillator"
+                    elif base == "STOCH_D":
+                        values = ta.momentum.stoch_signal(df['high'], df['low'], df['close'])
+                        panel = "oscillator"
+                    elif base == "VOLUME":
+                        values = df['volume']
+                        panel = "volume"
+                        series_type = "histogram"
+                    elif base == "SMA_VOLUME_20":
+                        values = ta.trend.sma_indicator(df['volume'], window=20)
+                        panel = "volume"
+                    elif base == "REL_VOLUME_20":
+                        sma_volume = ta.trend.sma_indicator(df['volume'], window=20)
+                        values = df['volume'] / sma_volume.where(sma_volume != 0)
+                        panel = "volume"
+                    else:
+                        return None
+
+                    points = _series_points(values)
+                    if not points:
+                        return None
+                    return {
+                        "id": base,
+                        "label": base,
+                        "panel": panel,
+                        "type": series_type,
+                        "enabled": True,
+                        "points": points
+                    }
+
+                indicator_series = []
+                seen = set()
+                for operand in base_operands:
+                    try:
+                        series = _series_from_operand(operand)
+                    except Exception as ex:
+                        self.logger.debug(f"Skipping chart indicator {operand}: {ex}")
+                        series = None
+                    if series and series["id"] not in seen:
+                        indicator_series.append(series)
+                        seen.add(series["id"])
+
+                response_candles = []
+                for candle in visible_candles:
+                    candle_dt = _normalize_dt(candle['timestamp'])
+                    response_candles.append({
+                        "time": _chart_time(candle_dt),
+                        "timestamp": candle_dt.isoformat(),
+                        "open": float(candle['open']),
+                        "high": float(candle['high']),
+                        "low": float(candle['low']),
+                        "close": float(candle['close']),
+                        "volume": int(candle.get('volume', 0) or 0)
+                    })
+
+                return {
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "rule_id": rule_id,
+                    "rule_name": rule.get("name"),
+                    "signal_timestamp": signal_dt.isoformat(),
+                    "signal_time": _chart_time(signal_dt),
+                    "before": before,
+                    "after": after,
+                    "candles": response_candles,
+                    "indicators": indicator_series,
+                    "rule_operands": base_operands,
+                    "rule": {
+                        "id": rule_id,
+                        "name": rule.get("name"),
+                        "type": rule.get("type"),
+                        "is_system": bool(rule.get("is_system")),
+                        "logic": rule_to_evaluate.get("logic", "AND"),
+                        "signal_type": rule_to_evaluate.get("signal_type", "BUY"),
+                        "conditions": rule_to_evaluate.get("conditions", []),
+                        "cooldown_sec": rule_to_evaluate.get("cooldown_sec")
+                    }
+                }
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(e)
+                )
+            except Exception as e:
+                self.logger.error(f"Swing chart error: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Swing chart failed: {str(e)}"
+                )
+
         @self.app.post("/api/swing/screen")
         async def screen_swing_signals(request: SwingScreenRequest):
             """

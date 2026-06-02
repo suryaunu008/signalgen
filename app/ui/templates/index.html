@@ -6,6 +6,7 @@
     <title>SignalGen - Multi-Mode Trading System</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
     <link
       rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
@@ -768,7 +769,7 @@
             <div id="backtest-message"></div>
             <div id="backtest-loading" class="hidden mb-4"></div>
 
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
               <div>
                 <label class="block text-sm font-medium text-gray-700 mb-2">Mode</label>
                 <select id="backtest-mode" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
@@ -788,8 +789,17 @@
                 </select>
               </div>
               <div>
-                <label class="block text-sm font-medium text-gray-700 mb-2">P/L Basis Price</label>
-                <select id="backtest-pl-basis" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <label class="block text-sm font-medium text-gray-700 mb-2">Entry Price Basis</label>
+                <select id="backtest-entry-price-basis" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  <option value="close" selected>Close</option>
+                  <option value="open">Open</option>
+                  <option value="high">High</option>
+                  <option value="low">Low</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">Exit / P/L Basis</label>
+                <select id="backtest-exit-price-basis" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
                   <option value="close" selected>Close</option>
                   <option value="open">Open</option>
                   <option value="high">High</option>
@@ -834,8 +844,8 @@
             </div>
 
             <div id="backtest-manual-mode-fields" class="hidden mb-4">
-              <label class="block text-sm font-medium text-gray-700 mb-2">Manual Entries (CSV lines: TICKER,YYYY-MM-DDTHH:MM,BUY/SELL)</label>
-              <textarea id="backtest-manual-entries" rows="8" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="BBCA.JK,2026-05-01T09:35,BUY&#10;TLKM.JK,2026-05-01T10:15,SELL"></textarea>
+              <label class="block text-sm font-medium text-gray-700 mb-2">Manual Entries (CSV: TICKER,YYYY-MM-DDTHH:MM,BUY/SELL,ENTRY_PRICE optional)</label>
+              <textarea id="backtest-manual-entries" rows="8" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="BBCA.JK,2026-05-01T09:35,BUY,9550&#10;TLKM.JK,2026-05-01T10:15,SELL&#10;AAPL,2026-05-01T09:35,BUY,192.50"></textarea>
             </div>
 
             <div class="flex gap-2">
@@ -941,6 +951,61 @@
 
           <!-- Screening Results -->
           <div id="swing-results-container"></div>
+
+          <div
+            id="swing-chart-modal"
+            class="fixed inset-0 bg-black bg-opacity-50 hidden z-50 flex items-center justify-center p-4"
+          >
+            <div class="bg-white rounded-lg shadow-xl w-full max-w-6xl max-h-[92vh] overflow-hidden flex flex-col">
+              <div class="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+                <div>
+                  <h3 id="swing-chart-title" class="text-lg font-semibold text-gray-900">Chart</h3>
+                  <p id="swing-chart-subtitle" class="text-sm text-gray-500"></p>
+                </div>
+                <button
+                  id="close-swing-chart-modal"
+                  class="w-9 h-9 rounded-md bg-gray-100 hover:bg-gray-200 text-gray-700"
+                  title="Close chart"
+                >
+                  <i class="fas fa-times"></i>
+                </button>
+              </div>
+              <div class="px-5 py-3 border-b border-gray-200 flex flex-wrap items-center justify-between gap-3">
+                <div id="swing-chart-toggles" class="flex flex-wrap items-center gap-2"></div>
+                <div class="flex items-center gap-2">
+                  <button
+                    id="swing-chart-rule-toggle"
+                    class="h-9 px-3 rounded-md border border-gray-300 hover:bg-gray-50 text-gray-700 text-sm inline-flex items-center gap-2"
+                    title="Show rule used for this chart"
+                  >
+                    <i class="fas fa-list"></i>
+                    <span>Rule</span>
+                  </button>
+                  <button
+                    id="swing-chart-range-minus"
+                    class="w-9 h-9 rounded-md border border-gray-300 hover:bg-gray-50 text-gray-700"
+                    title="Show fewer candles"
+                  >
+                    <i class="fas fa-minus"></i>
+                  </button>
+                  <span id="swing-chart-range-label" class="text-sm text-gray-600 min-w-[120px] text-center"></span>
+                  <button
+                    id="swing-chart-range-plus"
+                    class="w-9 h-9 rounded-md border border-gray-300 hover:bg-gray-50 text-gray-700"
+                    title="Show more candles"
+                  >
+                    <i class="fas fa-plus"></i>
+                  </button>
+                </div>
+              </div>
+              <div id="swing-chart-error" class="hidden mx-5 mt-4 p-3 rounded-md bg-red-50 text-red-800 text-sm"></div>
+              <div class="p-5 overflow-y-auto">
+                <div id="swing-chart-rule-panel" class="hidden mb-4 rounded-md border border-gray-200 bg-gray-50 p-4"></div>
+                <div id="swing-chart-main" class="w-full h-[430px] border border-gray-200 rounded-md"></div>
+                <div id="swing-chart-panels" class="mt-4 space-y-4"></div>
+              </div>
+            </div>
+          </div>
 
           <!-- Universe Management -->
           <section class="bg-white rounded-lg shadow-md p-6">

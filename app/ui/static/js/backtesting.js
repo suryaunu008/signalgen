@@ -1,7 +1,8 @@
 class BacktestingUI {
   constructor() {
     this.currentResults = null;
-    this.plBasis = 'close';
+    this.entryPriceBasis = 'close';
+    this.exitPriceBasis = 'close';
     this.currentPage = 1;
     this.pageSize = 25;
     this.initialized = false;
@@ -83,7 +84,15 @@ class BacktestingUI {
       if (!['BUY', 'SELL'].includes(signalType)) {
         throw new Error(`Invalid signal type in line: ${line}`);
       }
-      entries.push({ symbol: parts[0], entry_time: this.localInputToIso(parts[1]), signal_type: signalType });
+      const entry = { symbol: parts[0], entry_time: this.localInputToIso(parts[1]), signal_type: signalType };
+      if (parts[3] !== undefined && parts[3] !== '') {
+        const entryPrice = Number(parts[3]);
+        if (!Number.isFinite(entryPrice) || entryPrice <= 0) {
+          throw new Error(`Invalid entry price in line: ${line}`);
+        }
+        entry.entry_price = entryPrice;
+      }
+      entries.push(entry);
     }
     return entries;
   }
@@ -137,20 +146,23 @@ class BacktestingUI {
       const timeframe = document.getElementById('backtest-timeframe')?.value;
       const nSteps = parseInt(document.getElementById('backtest-n-steps')?.value || '0', 10);
       const dataSource = document.getElementById('backtest-data-source')?.value;
-      const plBasis = document.getElementById('backtest-pl-basis')?.value || 'close';
+      const entryPriceBasis = document.getElementById('backtest-entry-price-basis')?.value || 'close';
+      const exitPriceBasis = document.getElementById('backtest-exit-price-basis')?.value || 'close';
 
       if (!mode || !timeframe || !dataSource || Number.isNaN(nSteps) || nSteps < 1) {
         this.showError('Invalid input');
         return;
       }
-      this.plBasis = plBasis;
+      this.entryPriceBasis = entryPriceBasis;
+      this.exitPriceBasis = exitPriceBasis;
 
       const payload = {
         mode,
         timeframe,
         n_steps: nSteps,
         data_source: dataSource,
-        pl_basis: plBasis
+        entry_price_basis: entryPriceBasis,
+        exit_price_basis: exitPriceBasis
       };
 
       if (mode === 'rule') {
@@ -192,7 +204,9 @@ class BacktestingUI {
       }
 
       const result = await response.json();
-      result.pl_basis = result.pl_basis || this.plBasis;
+      result.entry_price_basis = result.entry_price_basis || this.entryPriceBasis;
+      result.exit_price_basis = result.exit_price_basis || result.pl_basis || this.exitPriceBasis;
+      result.pl_basis = result.pl_basis || result.exit_price_basis;
       this.currentResults = result;
       this.renderResults(result);
       this.hideLoading();
@@ -228,7 +242,8 @@ class BacktestingUI {
           <span class="rounded-full bg-slate-100 text-slate-700 px-2.5 py-1 text-xs font-semibold">Mode ${result.mode}</span>
           <span class="rounded-full bg-slate-100 text-slate-700 px-2.5 py-1 text-xs font-semibold">T ${result.timeframe}</span>
           <span class="rounded-full bg-slate-100 text-slate-700 px-2.5 py-1 text-xs font-semibold">n ${result.n_steps}</span>
-          <span class="rounded-full bg-amber-100 text-amber-800 px-2.5 py-1 text-xs font-semibold">P/L basis ${(result.pl_basis || 'close').toUpperCase()}</span>
+          <span class="rounded-full bg-blue-100 text-blue-800 px-2.5 py-1 text-xs font-semibold">Entry ${(result.entry_price_basis || 'close').toUpperCase()}</span>
+          <span class="rounded-full bg-amber-100 text-amber-800 px-2.5 py-1 text-xs font-semibold">Exit ${(result.exit_price_basis || result.pl_basis || 'close').toUpperCase()}</span>
         </div>
         ${this.buildMetricsHtml(result.metrics)}
         <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
@@ -243,14 +258,14 @@ class BacktestingUI {
     this.renderBacktestTable();
   }
 
-  buildBacktestRowHtml(row, nSteps, plBasis) {
+  buildBacktestRowHtml(row, nSteps, exitPriceBasis) {
     const signalType = (row.signal_type || 'BUY').toUpperCase();
     const signalClass = signalType === 'SELL' ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700';
     const cells = [
       `<span class="font-semibold text-slate-900">${row.symbol}</span>`,
       `<span class="rounded-full px-2 py-1 text-xs font-semibold ${signalClass}">${signalType}</span>`,
       `<span class="text-slate-700">${this.formatDateTime(row.entry_time)}</span>`,
-      `<span class="font-semibold text-slate-900">${Number(row.entry_price).toFixed(4)}</span>`
+      `<span class="font-semibold text-slate-900">${Number(row.entry_price).toFixed(4)}</span><div class="text-[11px] text-slate-500 uppercase">${row.entry_price_basis || 'close'}</div>`
     ];
 
     const entryPriceNum = Number(row.entry_price);
@@ -259,7 +274,7 @@ class BacktestingUI {
       if (!step) {
         cells.push('-');
       } else {
-        const priceField = plBasis || 'close';
+        const priceField = exitPriceBasis || 'close';
         const basisNum = Number(step.basis_price ?? step[priceField]);
         const pl = Number(step.pl ?? (basisNum - entryPriceNum));
         const plPct = Number(step.pl_pct ?? (entryPriceNum === 0 ? 0 : (pl / entryPriceNum) * 100));
@@ -278,7 +293,7 @@ class BacktestingUI {
               <span>L <b class="text-slate-800">${Number(step.low).toFixed(4)}</b></span>
               <span>C <b class="text-slate-800">${Number(step.close).toFixed(4)}</b></span>
             </div>
-            <div class="mt-2 text-[11px] text-slate-500">Basis: <b class="text-slate-700 uppercase">${priceField}</b> (${basisNum.toFixed(4)})</div>
+            <div class="mt-2 text-[11px] text-slate-500">Exit: <b class="text-slate-700 uppercase">${priceField}</b> (${basisNum.toFixed(4)})</div>
             <div class="mt-2 rounded-md border px-2 py-1 text-xs font-semibold ${plClass}">
               P/L ${sign}${pl.toFixed(4)} (${sign}${plPct.toFixed(2)}%)
             </div>
@@ -392,7 +407,7 @@ class BacktestingUI {
     const pageRows = rows.slice(start, end);
 
     tbody.innerHTML = pageRows.length > 0
-      ? pageRows.map((row) => this.buildBacktestRowHtml(row, this.currentResults.n_steps, this.currentResults.pl_basis)).join('')
+      ? pageRows.map((row) => this.buildBacktestRowHtml(row, this.currentResults.n_steps, this.currentResults.exit_price_basis || this.currentResults.pl_basis)).join('')
       : '<tr><td class="px-3 py-4 text-sm text-gray-500" colspan="999">No rows</td></tr>';
 
     this.renderBacktestPagination(totalItems, totalPages, totalItems === 0 ? 0 : start + 1, end);
@@ -473,7 +488,7 @@ class BacktestingUI {
     }
 
     const result = this.currentResults;
-    const headers = ['Ticker', 'Signal', 'Entry Time', 'Entry Price'];
+    const headers = ['Ticker', 'Signal', 'Entry Time', 'Entry Price', 'Entry Basis'];
     for (let i = 1; i <= result.n_steps; i += 1) {
       headers.push(`T+${i} OHLC`, `T+${i} P/L`, `T+${i} P/L%`);
     }
@@ -481,14 +496,14 @@ class BacktestingUI {
     const lines = [headers.join(',')];
 
     for (const row of result.rows) {
-      const line = [row.symbol, row.signal_type || 'BUY', this.formatDateTime(row.entry_time), row.entry_price];
+      const line = [row.symbol, row.signal_type || 'BUY', this.formatDateTime(row.entry_time), row.entry_price, row.entry_price_basis || result.entry_price_basis || 'close'];
       const entryPriceNum = Number(row.entry_price);
       for (let i = 1; i <= result.n_steps; i += 1) {
         const step = row.steps?.[`T+${i}`] || null;
         if (!step) {
           line.push('', '', '');
         } else {
-          const priceField = result.pl_basis || 'close';
+          const priceField = result.exit_price_basis || result.pl_basis || 'close';
           const basisNum = Number(step.basis_price ?? step[priceField]);
           const pl = Number(step.pl ?? (basisNum - entryPriceNum));
           const plPct = Number(step.pl_pct ?? (entryPriceNum === 0 ? 0 : (pl / entryPriceNum) * 100));

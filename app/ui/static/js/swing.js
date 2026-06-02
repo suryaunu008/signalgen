@@ -14,12 +14,17 @@ class SwingTradingUI {
     this.screeningInProgress = false;
     this.activeScreeningController = null;
     this.messageTimer = null;
-    this.currentFilter = 'all';
+    this.currentFilter = 'signals';
     this.currentPage = 1;
     this.pageSize = 25;
     this.sortKey = 'symbol';
     this.sortDirection = 'asc';
     this.eventsBound = false;
+    this.chartState = null;
+    this.chart = null;
+    this.chartSeries = [];
+    this.panelCharts = [];
+    this.syncingChartRange = false;
   }
 
   escapeCsvValue(value) {
@@ -86,11 +91,38 @@ class SwingTradingUI {
     const resultsContainer = document.getElementById('swing-results-container');
     if (resultsContainer) {
       resultsContainer.addEventListener('click', (event) => {
+        const chartButton = event.target.closest('button[data-chart-index]');
+        if (chartButton) {
+          const index = parseInt(chartButton.dataset.chartIndex, 10);
+          const row = this.currentResults?.results?.[index];
+          if (row) this.openChart(row);
+          return;
+        }
+
         const target = event.target.closest('button[data-filter]');
         if (!target) return;
         this.filterResults(target.dataset.filter || 'all');
       });
     }
+
+    const closeChartButton = document.getElementById('close-swing-chart-modal');
+    if (closeChartButton) closeChartButton.addEventListener('click', () => this.closeChartModal());
+
+    const chartModal = document.getElementById('swing-chart-modal');
+    if (chartModal) {
+      chartModal.addEventListener('click', (event) => {
+        if (event.target.id === 'swing-chart-modal') this.closeChartModal();
+      });
+    }
+
+    const rangeMinus = document.getElementById('swing-chart-range-minus');
+    if (rangeMinus) rangeMinus.addEventListener('click', () => this.adjustChartRange(-20));
+
+    const rangePlus = document.getElementById('swing-chart-range-plus');
+    if (rangePlus) rangePlus.addEventListener('click', () => this.adjustChartRange(20));
+
+    const ruleToggle = document.getElementById('swing-chart-rule-toggle');
+    if (ruleToggle) ruleToggle.addEventListener('click', () => this.toggleChartRulePanel());
   }
 
   async loadRules() {
@@ -383,6 +415,7 @@ class SwingTradingUI {
       }
 
       const result = await response.json();
+      result.request_payload = payload;
       this.currentResults = result;
       this.displayResults(result);
 
@@ -424,8 +457,11 @@ class SwingTradingUI {
     if (!resultsContainer) return;
 
     const results = Array.isArray(result.results) ? result.results : [];
+    results.forEach((row, index) => {
+      row._screenIndex = index;
+    });
     const summary = result.summary || {};
-    this.currentFilter = 'all';
+    this.currentFilter = 'signals';
     this.currentPage = 1;
     this.sortKey = 'symbol';
     this.sortDirection = 'asc';
@@ -519,12 +555,13 @@ class SwingTradingUI {
       { label: 'Signal', key: 'signal' },
       { label: 'Price', key: 'price' },
       { label: 'Timestamp', key: 'timestamp' },
-      { label: 'Status', key: 'status' }
+      { label: 'Status', key: 'status' },
+      { label: 'Chart', key: null }
     ];
     columns.forEach(({ label, key }) => {
       const th = document.createElement('th');
-      th.className = 'px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer select-none';
-      th.dataset.sortKey = key;
+      th.className = `px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase select-none ${key ? 'cursor-pointer' : ''}`;
+      if (key) th.dataset.sortKey = key;
       th.textContent = label;
       headerRow.appendChild(th);
     });
@@ -681,11 +718,22 @@ class SwingTradingUI {
       }
       status.appendChild(statusIcon);
 
+      const chart = document.createElement('td');
+      chart.className = 'px-4 py-3 text-sm';
+      const chartBtn = document.createElement('button');
+      chartBtn.className = 'w-9 h-9 rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed';
+      chartBtn.title = r.signal ? 'Open chart' : 'Chart is available for signal rows';
+      chartBtn.dataset.chartIndex = String(r._screenIndex ?? 0);
+      chartBtn.disabled = !r.signal || !r.timestamp;
+      chartBtn.innerHTML = '<i class="fas fa-chart-line"></i>';
+      chart.appendChild(chartBtn);
+
       tr.appendChild(symbol);
       tr.appendChild(signalTd);
       tr.appendChild(price);
       tr.appendChild(timestamp);
       tr.appendChild(status);
+      tr.appendChild(chart);
       tbody.appendChild(tr);
     });
 
@@ -772,6 +820,414 @@ class SwingTradingUI {
     right.appendChild(next);
     bar.appendChild(left);
     bar.appendChild(right);
+  }
+
+  async openChart(row) {
+    const requestPayload = this.currentResults?.request_payload || {};
+    const ruleId = requestPayload.rule_id || parseInt(document.getElementById('swing-rule-select')?.value, 10);
+    const timeframe = requestPayload.timeframe || document.getElementById('swing-timeframe')?.value || '1d';
+    if (!ruleId || !row?.symbol || !row?.timestamp) {
+      this.showError('Chart requires symbol, timestamp, and rule');
+      return;
+    }
+
+    this.chartState = {
+      row,
+      ruleId,
+      timeframe,
+      before: 80,
+      after: 40,
+      enabled: new Set(),
+      showRule: false
+    };
+
+    const modal = document.getElementById('swing-chart-modal');
+    if (modal) modal.classList.remove('hidden');
+    await this.loadChartData();
+  }
+
+  closeChartModal() {
+    const modal = document.getElementById('swing-chart-modal');
+    if (modal) modal.classList.add('hidden');
+    this.clearCharts();
+    this.chartState = null;
+  }
+
+  async adjustChartRange(delta) {
+    if (!this.chartState) return;
+    this.chartState.before = Math.min(250, Math.max(10, this.chartState.before + delta));
+    this.chartState.after = Math.min(120, Math.max(0, this.chartState.after + Math.round(delta / 2)));
+    await this.loadChartData();
+  }
+
+  async loadChartData() {
+    if (!this.chartState) return;
+    const { row, ruleId, timeframe, before, after } = this.chartState;
+    const errorEl = document.getElementById('swing-chart-error');
+    if (errorEl) errorEl.classList.add('hidden');
+
+    try {
+      const params = new URLSearchParams({
+        symbol: row.symbol,
+        timeframe,
+        timestamp: row.timestamp,
+        rule_id: String(ruleId),
+        before: String(before),
+        after: String(after)
+      });
+      const response = await fetch(`/api/swing/chart?${params.toString()}`);
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to load chart');
+      }
+      const data = await response.json();
+      this.chartState.data = data;
+      if (this.chartState.enabled.size === 0) {
+        (data.indicators || []).forEach((item) => this.chartState.enabled.add(item.id));
+      }
+      this.renderChartModal(data);
+    } catch (error) {
+      if (errorEl) {
+        errorEl.textContent = error.message;
+        errorEl.classList.remove('hidden');
+      }
+      console.error('Chart error:', error);
+    }
+  }
+
+  renderChartModal(data) {
+    const title = document.getElementById('swing-chart-title');
+    const subtitle = document.getElementById('swing-chart-subtitle');
+    const rangeLabel = document.getElementById('swing-chart-range-label');
+    if (title) title.textContent = `${data.symbol} ${data.signal ? data.signal : ''}`.trim();
+    if (subtitle) {
+      subtitle.textContent = `${data.timeframe} • ${data.rule_name || 'Rule'} • ${this.formatDateTime(data.signal_timestamp)}`;
+    }
+    if (rangeLabel) rangeLabel.textContent = `${data.before} / ${data.after} candles`;
+
+    this.assignIndicatorColors(data.indicators || []);
+    this.renderIndicatorToggles(data.indicators || []);
+    this.renderChartRulePanel(data.rule || null);
+    this.renderCharts(data);
+  }
+
+  toggleChartRulePanel() {
+    if (!this.chartState) return;
+    this.chartState.showRule = !this.chartState.showRule;
+    this.renderChartRulePanel(this.chartState.data?.rule || null);
+  }
+
+  renderChartRulePanel(rule) {
+    const panel = document.getElementById('swing-chart-rule-panel');
+    const toggle = document.getElementById('swing-chart-rule-toggle');
+    if (!panel) return;
+
+    const visible = !!this.chartState?.showRule;
+    panel.classList.toggle('hidden', !visible);
+    if (toggle) {
+      toggle.classList.toggle('bg-blue-50', visible);
+      toggle.classList.toggle('border-blue-300', visible);
+      toggle.classList.toggle('text-blue-700', visible);
+    }
+    if (!visible) return;
+
+    panel.innerHTML = '';
+    if (!rule) {
+      const empty = document.createElement('p');
+      empty.className = 'text-sm text-gray-500';
+      empty.textContent = 'Rule details are not available for this chart.';
+      panel.appendChild(empty);
+      return;
+    }
+
+    const header = document.createElement('div');
+    header.className = 'flex flex-wrap items-center justify-between gap-2 mb-3';
+
+    const titleWrap = document.createElement('div');
+    const title = document.createElement('div');
+    title.className = 'font-semibold text-gray-900';
+    title.textContent = rule.name || 'Rule';
+    const meta = document.createElement('div');
+    meta.className = 'text-xs text-gray-500';
+    const bits = [
+      rule.signal_type ? `Signal: ${rule.signal_type}` : null,
+      rule.logic ? `Logic: ${rule.logic}` : null,
+      Number.isFinite(Number(rule.cooldown_sec)) ? `Cooldown: ${rule.cooldown_sec}s` : null,
+      rule.is_system ? 'System' : 'Custom',
+    ].filter(Boolean);
+    meta.textContent = bits.join(' • ');
+    titleWrap.appendChild(title);
+    titleWrap.appendChild(meta);
+
+    header.appendChild(titleWrap);
+    panel.appendChild(header);
+
+    const conditions = Array.isArray(rule.conditions) ? rule.conditions : [];
+    if (!conditions.length) {
+      const empty = document.createElement('p');
+      empty.className = 'text-sm text-gray-500';
+      empty.textContent = 'No conditions.';
+      panel.appendChild(empty);
+      return;
+    }
+
+    const list = document.createElement('div');
+    list.className = 'space-y-2';
+    conditions.forEach((condition, index) => {
+      const item = document.createElement('div');
+      item.className = 'rounded-md border border-gray-200 bg-white px-3 py-2 text-sm font-mono text-gray-800';
+      const prefix = index === 0 ? 'WHEN' : (rule.logic || 'AND');
+      item.textContent = `${prefix} ${this.formatOperand(condition.left)} ${condition.op || '?'} ${this.formatOperand(condition.right)}`;
+      list.appendChild(item);
+    });
+    panel.appendChild(list);
+  }
+
+  formatOperand(value) {
+    if (value === null || value === undefined) return '-';
+    if (typeof value === 'number') return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(6)));
+    return String(value);
+  }
+
+  assignIndicatorColors(indicators) {
+    if (!this.chartState) return;
+    if (!this.chartState.indicatorColors) this.chartState.indicatorColors = new Map();
+    indicators.forEach((indicator, index) => {
+      if (!this.chartState.indicatorColors.has(indicator.id)) {
+        this.chartState.indicatorColors.set(indicator.id, this.seriesColor(index));
+      }
+    });
+  }
+
+  getIndicatorColor(indicator) {
+    return this.chartState?.indicatorColors?.get(indicator.id) || this.seriesColor(0);
+  }
+
+  getIndicatorSwatchStyle(indicator) {
+    if (indicator.type === 'histogram') {
+      return 'background: linear-gradient(90deg, #16a34a 0 50%, #dc2626 50% 100%);';
+    }
+    return `background: ${this.getIndicatorColor(indicator)};`;
+  }
+
+  renderIndicatorToggles(indicators) {
+    const container = document.getElementById('swing-chart-toggles');
+    if (!container) return;
+    container.innerHTML = '';
+
+    if (indicators.length === 0) {
+      const empty = document.createElement('span');
+      empty.className = 'text-sm text-gray-500';
+      empty.textContent = 'No rule indicators to plot';
+      container.appendChild(empty);
+      return;
+    }
+
+    indicators.forEach((indicator) => {
+      const label = document.createElement('label');
+      label.className = 'inline-flex items-center gap-2 px-2.5 py-1 rounded-md border border-gray-300 text-sm bg-white';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = this.chartState.enabled.has(indicator.id);
+      input.addEventListener('change', () => {
+        if (input.checked) {
+          this.chartState.enabled.add(indicator.id);
+        } else {
+          this.chartState.enabled.delete(indicator.id);
+        }
+        this.renderCharts(this.chartState.data);
+      });
+      const swatch = document.createElement('span');
+      swatch.className = 'inline-block w-3 h-3 rounded-sm border border-gray-300';
+      swatch.style.cssText = this.getIndicatorSwatchStyle(indicator);
+      const text = document.createElement('span');
+      text.textContent = indicator.label;
+      label.appendChild(input);
+      label.appendChild(swatch);
+      label.appendChild(text);
+      container.appendChild(label);
+    });
+  }
+
+  renderCharts(data) {
+    this.clearCharts();
+    const LW = window.LightweightCharts;
+    const mainEl = document.getElementById('swing-chart-main');
+    const panelsEl = document.getElementById('swing-chart-panels');
+    if (!mainEl || !panelsEl) return;
+    panelsEl.innerHTML = '';
+
+    if (!LW || typeof LW.createChart !== 'function') {
+      mainEl.innerHTML = '<div class="p-4 text-sm text-red-700">Chart library failed to load.</div>';
+      return;
+    }
+
+    const candles = (data.candles || []).map((candle) => ({
+      time: candle.time,
+      open: candle.open,
+      high: candle.high,
+      low: candle.low,
+      close: candle.close
+    }));
+
+    this.chart = LW.createChart(mainEl, this.getChartOptions(mainEl, 430));
+    const candleSeries = this.addChartSeries(this.chart, 'candlestick', {
+      upColor: '#16a34a',
+      downColor: '#dc2626',
+      borderVisible: false,
+      wickUpColor: '#16a34a',
+      wickDownColor: '#dc2626'
+    });
+    candleSeries.setData(candles);
+    this.addSignalMarker(candleSeries, data.signal_time);
+    this.chartSeries.push(candleSeries);
+
+    const overlay = (data.indicators || []).filter((item) => item.panel === 'overlay' && this.chartState.enabled.has(item.id));
+    overlay.forEach((item) => {
+      const series = this.addChartSeries(this.chart, item.type || 'line', {
+        color: this.getIndicatorColor(item),
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: false
+      });
+      series.setData(item.points || []);
+      this.chartSeries.push(series);
+    });
+    this.chart.timeScale().fitContent();
+
+    const grouped = {};
+    (data.indicators || [])
+      .filter((item) => item.panel !== 'overlay' && this.chartState.enabled.has(item.id))
+      .forEach((item) => {
+        if (!grouped[item.panel]) grouped[item.panel] = [];
+        grouped[item.panel].push(item);
+      });
+
+    Object.entries(grouped).forEach(([panelName, items]) => {
+      const panelWrap = document.createElement('div');
+      panelWrap.className = 'border border-gray-200 rounded-md overflow-hidden';
+      const panelTitle = document.createElement('div');
+      panelTitle.className = 'px-3 py-2 text-xs font-semibold uppercase text-gray-500 bg-gray-50 border-b border-gray-200';
+      panelTitle.textContent = panelName;
+      const panelEl = document.createElement('div');
+      panelEl.className = 'h-[180px]';
+      panelWrap.appendChild(panelTitle);
+      panelWrap.appendChild(panelEl);
+      panelsEl.appendChild(panelWrap);
+
+      const panelChart = LW.createChart(panelEl, this.getChartOptions(panelEl, 180));
+      this.panelCharts.push(panelChart);
+      items.forEach((item) => {
+        const series = this.addChartSeries(panelChart, item.type || 'line', {
+          color: this.getIndicatorColor(item),
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: false
+        });
+        const points = (item.points || []).map((point) => (
+          item.type === 'histogram'
+            ? { ...point, color: point.value >= 0 ? '#16a34a' : '#dc2626' }
+            : point
+        ));
+        series.setData(points);
+        this.chartSeries.push(series);
+      });
+      panelChart.timeScale().fitContent();
+    });
+
+    this.syncChartTimeScales();
+  }
+
+  syncChartTimeScales() {
+    const charts = [this.chart, ...this.panelCharts].filter(Boolean);
+    if (charts.length < 2) return;
+
+    charts.forEach((sourceChart) => {
+      const sourceScale = sourceChart.timeScale();
+      if (!sourceScale || typeof sourceScale.subscribeVisibleLogicalRangeChange !== 'function') return;
+
+      sourceScale.subscribeVisibleLogicalRangeChange((range) => {
+        if (this.syncingChartRange || !range) return;
+        this.syncingChartRange = true;
+        charts.forEach((targetChart) => {
+          if (targetChart === sourceChart) return;
+          const targetScale = targetChart.timeScale();
+          if (targetScale && typeof targetScale.setVisibleLogicalRange === 'function') {
+            targetScale.setVisibleLogicalRange(range);
+          }
+        });
+        this.syncingChartRange = false;
+      });
+    });
+  }
+
+  getChartOptions(container, height) {
+    return {
+      width: Math.max(320, container.clientWidth || 900),
+      height,
+      layout: {
+        background: { color: '#ffffff' },
+        textColor: '#334155'
+      },
+      grid: {
+        vertLines: { color: '#e5e7eb' },
+        horzLines: { color: '#e5e7eb' }
+      },
+      rightPriceScale: { borderColor: '#e5e7eb' },
+      timeScale: { borderColor: '#e5e7eb', timeVisible: true, secondsVisible: false },
+      crosshair: { mode: 1 }
+    };
+  }
+
+  addChartSeries(chart, type, options) {
+    const LW = window.LightweightCharts;
+    if (type === 'candlestick') {
+      if (typeof chart.addCandlestickSeries === 'function') return chart.addCandlestickSeries(options);
+      return chart.addSeries(LW.CandlestickSeries, options);
+    }
+    if (type === 'histogram') {
+      if (typeof chart.addHistogramSeries === 'function') return chart.addHistogramSeries(options);
+      return chart.addSeries(LW.HistogramSeries, options);
+    }
+    if (typeof chart.addLineSeries === 'function') return chart.addLineSeries(options);
+    return chart.addSeries(LW.LineSeries, options);
+  }
+
+  addSignalMarker(series, signalTime) {
+    const marker = {
+      time: signalTime,
+      position: 'aboveBar',
+      color: '#2563eb',
+      shape: 'arrowDown',
+      text: 'Signal'
+    };
+    if (typeof series.setMarkers === 'function') {
+      series.setMarkers([marker]);
+      return;
+    }
+    if (window.LightweightCharts?.createSeriesMarkers) {
+      window.LightweightCharts.createSeriesMarkers(series, [marker]);
+    }
+  }
+
+  clearCharts() {
+    if (this.chart) {
+      this.chart.remove();
+      this.chart = null;
+    }
+    this.panelCharts.forEach((chart) => chart.remove());
+    this.panelCharts = [];
+    this.chartSeries = [];
+    this.syncingChartRange = false;
+    const mainEl = document.getElementById('swing-chart-main');
+    const panelsEl = document.getElementById('swing-chart-panels');
+    if (mainEl) mainEl.innerHTML = '';
+    if (panelsEl) panelsEl.innerHTML = '';
+  }
+
+  seriesColor(index) {
+    const colors = ['#2563eb', '#f59e0b', '#7c3aed', '#0891b2', '#db2777', '#65a30d', '#9333ea'];
+    return colors[index % colors.length];
   }
 
   showCreateUniverseForm() {

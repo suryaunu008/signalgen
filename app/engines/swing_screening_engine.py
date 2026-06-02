@@ -36,6 +36,7 @@ from datetime import datetime, timedelta
 from ..core.rule_engine import RuleEngine
 from ..core.indicator_engine import IndicatorEngine
 from ..storage.sqlite_repo import SQLiteRepository
+from ..data_sources.cached_data_source import CachedDataSource
 from ..data_sources.yahoo_data_source import YahooDataSource
 
 class SwingScreeningEngine:
@@ -53,9 +54,13 @@ class SwingScreeningEngine:
         Args:
             timeframe: Candle timeframe ('1h', '4h', '1d' recommended for swing trading)
         """
-        self.data_source = YahooDataSource()
         self.timeframe = timeframe
         self.repository = SQLiteRepository()
+        self.data_source = CachedDataSource(
+            YahooDataSource(),
+            self.repository,
+            data_source_name='yahoo'
+        )
         self.logger = logging.getLogger(__name__)
         self.max_concurrency = 8
         self.max_retries = 3

@@ -234,25 +234,21 @@ class SignalGenApp {
 
   getOperandOptionsHTML() {
     const fallbackGroups = {
-      "Price & Candle": ["PRICE", "PREV_CLOSE", "PREV_OPEN"],
+      "Price & Candle": ["PRICE", "OPEN", "HIGH", "LOW", "CLOSE"],
       "Simple Moving Averages": ["MA20", "MA50", "MA100", "MA200"],
       "Exponential Moving Averages": ["EMA6", "EMA9", "EMA10", "EMA13", "EMA20", "EMA21", "EMA34", "EMA50"],
-      MACD: ["MACD", "MACD_SIGNAL", "MACD_HIST", "MACD_HIST_PREV"],
-      RSI: ["RSI14", "RSI14_PREV"],
-      ADX: ["ADX5", "ADX5_PREV"],
+      MACD: ["MACD", "MACD_SIGNAL", "MACD_HIST"],
+      RSI: ["RSI14"],
+      ADX: ["ADX5"],
       "Bollinger Bands": ["BB_UPPER", "BB_MIDDLE", "BB_LOWER", "BB_WIDTH"],
-      "Stochastic Oscillator": ["STOCH_K", "STOCH_D", "STOCH_K_PREV", "STOCH_D_PREV"],
+      "Stochastic Oscillator": ["STOCH_K", "STOCH_D"],
       "Ichimoku Cloud": [
         "ICHIMOKU_CONVERSION",
         "ICHIMOKU_BASE",
         "ICHIMOKU_A",
         "ICHIMOKU_B",
-        "ICHIMOKU_CONVERSION_PREV",
-        "ICHIMOKU_BASE_PREV",
-        "ICHIMOKU_A_PREV",
-        "ICHIMOKU_B_PREV",
       ],
-      Volume: ["VOLUME", "SMA_VOLUME_20", "REL_VOLUME_20"],
+      Volume: ["VOLUME", "SMA_VOLUME_20"],
       "Calculated Metrics": ["PRICE_EMA20_DIFF_PCT"],
     };
     const groups = this.ruleSchema?.operand_groups || fallbackGroups;
@@ -1614,19 +1610,38 @@ class SignalGenApp {
 
     const bounds = this.ruleSchema?.dynamic_parameter_bounds || { min: 1, max: 250 };
     const wrapper = document.createElement("div");
-    wrapper.className = `condition-${side}-dynamic-wrap grid grid-cols-[1fr_96px] gap-2`;
+    wrapper.className = `condition-${side}-dynamic-wrap flex flex-wrap gap-2`;
 
     const typeSelect = document.createElement("select");
-    typeSelect.className = `condition-${side}-dynamic-type w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white`;
+    typeSelect.className = `condition-${side}-dynamic-type flex-1 min-w-[150px] px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white`;
     typeSelect.innerHTML = `
+      <option value="PREV_N">BASE_PREV_N</option>
       <option value="PRICE_PREV">PRICE_PREV_N</option>
+      <option value="MA_PREV_N">MA&lt;N&gt;_PREV_N</option>
+      <option value="EMA_PREV_N">EMA&lt;N&gt;_PREV_N</option>
+      <option value="RSI_PREV_N">RSI&lt;N&gt;_PREV_N</option>
+      <option value="ADX_PREV_N">ADX&lt;N&gt;_PREV_N</option>
+      <option value="SMA_VOLUME_PREV_N">SMA_VOLUME_N_PREV_N</option>
       <option value="MA">MA&lt;N&gt;</option>
       <option value="EMA" selected>EMA&lt;N&gt;</option>
       <option value="RSI">RSI&lt;N&gt;</option>
       <option value="ADX">ADX&lt;N&gt;</option>
       <option value="SMA_VOLUME">SMA_VOLUME_N</option>
-      <option value="REL_VOLUME">REL_VOLUME_N</option>
     `;
+
+    const baseSelect = document.createElement("select");
+    baseSelect.className = `condition-${side}-dynamic-base flex-[2_1_220px] min-w-[220px] px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white hidden`;
+    baseSelect.innerHTML = this.getDynamicPrevBaseOptionsHTML();
+
+    const basePeriodInput = document.createElement("input");
+    basePeriodInput.type = "number";
+    basePeriodInput.min = String(bounds.min || 1);
+    basePeriodInput.max = String(bounds.max || 250);
+    basePeriodInput.step = "1";
+    basePeriodInput.value = "20";
+    basePeriodInput.className = `condition-${side}-dynamic-base-period flex-none w-28 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white hidden`;
+    basePeriodInput.title = `Indicator period (${basePeriodInput.min}-${basePeriodInput.max})`;
+    basePeriodInput.placeholder = "Period";
 
     const periodInput = document.createElement("input");
     periodInput.type = "number";
@@ -1634,8 +1649,9 @@ class SignalGenApp {
     periodInput.max = String(bounds.max || 250);
     periodInput.step = "1";
     periodInput.value = "20";
-    periodInput.className = `condition-${side}-dynamic-period w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white`;
+    periodInput.className = `condition-${side}-dynamic-period flex-none w-24 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white`;
     periodInput.title = `Period (${periodInput.min}-${periodInput.max})`;
+    periodInput.placeholder = "N";
 
     const switchButton = document.createElement("button");
     switchButton.type = "button";
@@ -1644,18 +1660,76 @@ class SignalGenApp {
     switchButton.title = "Switch to dropdown";
 
     wrapper.appendChild(typeSelect);
+    wrapper.appendChild(baseSelect);
+    wrapper.appendChild(basePeriodInput);
     wrapper.appendChild(periodInput);
     select.style.display = "none";
     select.parentNode.insertBefore(wrapper, select);
     select.parentNode.insertBefore(switchButton, select);
 
-    typeSelect.addEventListener("change", () => this.updateConditionSummary(row));
+    typeSelect.addEventListener("change", () => {
+      this.syncDynamicInputControls(row, side);
+      this.updateConditionSummary(row);
+    });
+    baseSelect.addEventListener("change", () => this.updateConditionSummary(row));
+    basePeriodInput.addEventListener("input", () => {
+      this.validateDynamicPeriodInput(basePeriodInput);
+      this.updateConditionSummary(row);
+    });
     periodInput.addEventListener("input", () => {
       this.validateDynamicPeriodInput(periodInput);
       this.updateConditionSummary(row);
     });
     switchButton.addEventListener("click", () => this.switchToDropdown(row, side));
+    this.syncDynamicInputControls(row, side);
     this.updateConditionSummary(row);
+  }
+
+  getDynamicPrevBaseOptionsHTML() {
+    const groups = this.ruleSchema?.prev_n_base_operand_groups || this.ruleSchema?.operand_groups || {
+      "Price & Candle": ["PRICE", "OPEN", "HIGH", "LOW", "CLOSE"],
+      "Moving Averages": ["MA20", "MA50", "EMA20", "EMA50"],
+      Momentum: ["RSI14", "ADX5", "MACD", "MACD_SIGNAL", "MACD_HIST"],
+      Bands: ["BB_UPPER", "BB_MIDDLE", "BB_LOWER"],
+      Stochastic: ["STOCH_K", "STOCH_D"],
+      "Ichimoku Cloud": ["ICHIMOKU_CONVERSION", "ICHIMOKU_BASE", "ICHIMOKU_A", "ICHIMOKU_B"],
+      Volume: ["VOLUME", "SMA_VOLUME_20"],
+      "Calculated Metrics": ["PRICE_EMA20_DIFF_PCT"],
+    };
+    return Object.entries(groups)
+      .map(([label, operands]) => {
+        const options = (operands || [])
+          .filter((operand) => operand && !String(operand).endsWith("_PREV") && !String(operand).startsWith("PREV_"))
+          .map((operand) => `<option value="${this.escapeHtml(operand)}">${this.escapeHtml(operand)}</option>`)
+          .join("");
+        return options ? `<optgroup label="${this.escapeHtml(label)}">${options}</optgroup>` : "";
+      })
+      .join("");
+  }
+
+  syncDynamicInputControls(row, side) {
+    const typeSelect = row.querySelector(`.condition-${side}-dynamic-type`);
+    const baseSelect = row.querySelector(`.condition-${side}-dynamic-base`);
+    const basePeriodInput = row.querySelector(`.condition-${side}-dynamic-base-period`);
+    const periodInput = row.querySelector(`.condition-${side}-dynamic-period`);
+    if (!typeSelect || !baseSelect || !basePeriodInput || !periodInput) return;
+
+    const type = typeSelect.value;
+    const periodPrevTypes = new Set([
+      "MA_PREV_N",
+      "EMA_PREV_N",
+      "RSI_PREV_N",
+      "ADX_PREV_N",
+      "SMA_VOLUME_PREV_N",
+    ]);
+    const usesBaseSelect = type === "PREV_N";
+    const usesBasePeriod = periodPrevTypes.has(type);
+    baseSelect.classList.toggle("hidden", !usesBaseSelect);
+    basePeriodInput.classList.toggle("hidden", !usesBasePeriod);
+    periodInput.title = usesBaseSelect || usesBasePeriod
+      ? `Previous candle offset (${periodInput.min}-${periodInput.max})`
+      : `Indicator period (${periodInput.min}-${periodInput.max})`;
+    periodInput.placeholder = usesBaseSelect || usesBasePeriod ? "Prev N" : "Period";
   }
 
   hideCustomDynamicInput(row, side) {
@@ -1686,6 +1760,8 @@ class SignalGenApp {
 
   buildDynamicOperand(row, side, index, validationErrors) {
     const typeSelect = row.querySelector(`.condition-${side}-dynamic-type`);
+    const baseSelect = row.querySelector(`.condition-${side}-dynamic-base`);
+    const basePeriodInput = row.querySelector(`.condition-${side}-dynamic-base-period`);
     const periodInput = row.querySelector(`.condition-${side}-dynamic-period`);
 
     if (!typeSelect || !periodInput) {
@@ -1700,9 +1776,28 @@ class SignalGenApp {
 
     const period = parseInt(periodInput.value, 10);
     const type = typeSelect.value;
+    if (type === "PREV_N") {
+      const base = baseSelect?.value;
+      if (!base) {
+        validationErrors.push(`Condition ${index + 1} ${side} side: Previous-value base operand missing`);
+        return null;
+      }
+      return `${base}_PREV_${period}`;
+    }
+    if (this.isDynamicPrevPeriodType(type)) {
+      if (!this.validateDynamicPeriodInput(basePeriodInput)) {
+        validationErrors.push(`Condition ${index + 1} ${side} side: Invalid base indicator period`);
+        return null;
+      }
+      const basePeriod = parseInt(basePeriodInput.value, 10);
+      const prefix = this.getDynamicPrevPeriodPrefix(type);
+      if (type === "SMA_VOLUME_PREV_N") {
+        return `${prefix}_${basePeriod}_PREV_${period}`;
+      }
+      return `${prefix}${basePeriod}_PREV_${period}`;
+    }
     if (type === "PRICE_PREV") return `PRICE_PREV_${period}`;
     if (type === "SMA_VOLUME") return `SMA_VOLUME_${period}`;
-    if (type === "REL_VOLUME") return `REL_VOLUME_${period}`;
     return `${type}${period}`;
   }
 
@@ -1717,12 +1812,22 @@ class SignalGenApp {
 
     if (select.value === "_CUSTOM_DYNAMIC_") {
       const typeSelect = row.querySelector(`.condition-${side}-dynamic-type`);
+      const baseSelect = row.querySelector(`.condition-${side}-dynamic-base`);
+      const basePeriodInput = row.querySelector(`.condition-${side}-dynamic-base-period`);
       const periodInput = row.querySelector(`.condition-${side}-dynamic-period`);
       const type = typeSelect?.value || "EMA";
       const period = periodInput?.value || "N";
+      if (type === "PREV_N") return `${baseSelect?.value || "BASE"}_PREV_${period}`;
+      if (this.isDynamicPrevPeriodType(type)) {
+        const basePeriod = basePeriodInput?.value || "N";
+        const prefix = this.getDynamicPrevPeriodPrefix(type);
+        if (type === "SMA_VOLUME_PREV_N") {
+          return `${prefix}_${basePeriod}_PREV_${period}`;
+        }
+        return `${prefix}${basePeriod}_PREV_${period}`;
+      }
       if (type === "PRICE_PREV") return `PRICE_PREV_${period}`;
       if (type === "SMA_VOLUME") return `SMA_VOLUME_${period}`;
-      if (type === "REL_VOLUME") return `REL_VOLUME_${period}`;
       return `${type}${period}`;
     }
 
@@ -1755,7 +1860,27 @@ class SignalGenApp {
   }
 
   isDynamicCrossableOperand(operand) {
-    return /^(MA|EMA|RSI|ADX)\d+$/.test(operand) || /^(SMA_VOLUME|REL_VOLUME)_\d+$/.test(operand);
+    return /^(MA|EMA|RSI|ADX)\d+$/.test(operand) || /^SMA_VOLUME_\d+$/.test(operand);
+  }
+
+  isDynamicPrevPeriodType(type) {
+    return [
+      "MA_PREV_N",
+      "EMA_PREV_N",
+      "RSI_PREV_N",
+      "ADX_PREV_N",
+      "SMA_VOLUME_PREV_N",
+    ].includes(type);
+  }
+
+  getDynamicPrevPeriodPrefix(type) {
+    return {
+      MA_PREV_N: "MA",
+      EMA_PREV_N: "EMA",
+      RSI_PREV_N: "RSI",
+      ADX_PREV_N: "ADX",
+      SMA_VOLUME_PREV_N: "SMA_VOLUME",
+    }[type] || "";
   }
 
   /**

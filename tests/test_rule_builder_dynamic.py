@@ -21,7 +21,11 @@ def test_rule_engine_accepts_existing_and_dynamic_operands():
 
     for rule in [
         _rule("EMA20", ">", "RSI14"),
+        _rule("HIGH", ">", "LOW"),
+        _rule("CLOSE_PREV_5", ">", "OPEN_PREV_5"),
         _rule("PRICE_PREV_5", ">", "EMA12"),
+        _rule("EMA12_PREV_3", ">", "RSI7_PREV_2"),
+        _rule("MACD_HIST_PREV_2", ">", 0),
         _rule("RSI7", "<", 40),
         _rule("REL_VOLUME_10", ">=", 1.3),
         _rule("STOCH_K", ">", "STOCH_D"),
@@ -30,7 +34,7 @@ def test_rule_engine_accepts_existing_and_dynamic_operands():
         engine.validate_rule(rule)
 
 
-@pytest.mark.parametrize("operand", ["PRICE_PREV_0", "EMAabc", "RSI9999"])
+@pytest.mark.parametrize("operand", ["PRICE_PREV_0", "EMAabc", "RSI9999", "EMA20_PREV_0", "UNKNOWN_PREV_3"])
 def test_rule_engine_rejects_invalid_dynamic_operands(operand):
     engine = RuleEngine()
 
@@ -103,9 +107,43 @@ def test_indicator_engine_generates_dynamic_price_indicator_and_volume_values():
     assert math.isfinite(indicators["REL_VOLUME_10"])
 
 
+def test_indicator_engine_generates_ohlc_and_generic_price_prev_n_values():
+    indicator_engine = IndicatorEngine(timeframe="1m")
+    indicator_engine.set_required_operands({"HIGH_PREV_2", "CLOSE_PREV_3", "PRICE_PREV_3"})
+
+    for i in range(2, 21):
+        indicator_engine.update_candle_data(
+            symbol="AAPL",
+            open_price=float(i),
+            high=float(i) + 2,
+            low=float(i) - 1,
+            close=float(i) + 0.5,
+            timestamp=float(i * 60),
+            volume=100 + i,
+        )
+
+    indicators = indicator_engine.get_indicators("AAPL")
+
+    assert indicators["OPEN"] == 19
+    assert indicators["HIGH"] == 21
+    assert indicators["LOW"] == 18
+    assert indicators["CLOSE"] == indicators["PRICE"] == 19.5
+    assert indicators["PREV_OPEN"] == indicators["OPEN_PREV"] == 18
+    assert indicators["PREV_CLOSE"] == indicators["CLOSE_PREV"] == 18.5
+    assert indicators["HIGH_PREV_2"] == 17 + 2
+    assert indicators["CLOSE_PREV_3"] == 16.5
+    assert indicators["PRICE_PREV_3"] == indicators["CLOSE_PREV_3"]
+
+
 def test_indicator_engine_generates_dynamic_technical_indicators():
     indicator_engine = IndicatorEngine(timeframe="1m")
-    indicator_engine.set_required_operands(_rule("EMA12", ">", "RSI7"))
+    indicator_engine.set_required_operands({
+        "EMA12",
+        "RSI7",
+        "EMA12_PREV_3",
+        "RSI7_PREV_2",
+        "MACD_HIST_PREV_1",
+    })
 
     for i in range(1, 60):
         price = 100 + (i * 0.5)
@@ -123,12 +161,24 @@ def test_indicator_engine_generates_dynamic_technical_indicators():
 
     assert "EMA12" in indicators
     assert "RSI7" in indicators
+    assert "EMA12_PREV_3" in indicators
+    assert "RSI7_PREV_2" in indicators
+    assert "MACD_HIST_PREV_1" in indicators
     assert math.isfinite(indicators["EMA12"])
     assert math.isfinite(indicators["RSI7"])
+    assert math.isfinite(indicators["EMA12_PREV_3"])
+    assert math.isfinite(indicators["RSI7_PREV_2"])
+    assert math.isfinite(indicators["MACD_HIST_PREV_1"])
 
 
 def test_indicator_engine_generates_stochastic_and_ichimoku_indicators():
     indicator_engine = IndicatorEngine(timeframe="1m")
+    indicator_engine.set_required_operands({
+        "ICHIMOKU_CONVERSION_PREV_2",
+        "ICHIMOKU_BASE_PREV_2",
+        "ICHIMOKU_A_PREV_2",
+        "ICHIMOKU_B_PREV_2",
+    })
 
     for i in range(1, 82):
         price = 100 + (i * 0.3) + ((i % 7) * 0.2)
@@ -151,6 +201,10 @@ def test_indicator_engine_generates_stochastic_and_ichimoku_indicators():
         "ICHIMOKU_BASE",
         "ICHIMOKU_A",
         "ICHIMOKU_B",
+        "ICHIMOKU_CONVERSION_PREV_2",
+        "ICHIMOKU_BASE_PREV_2",
+        "ICHIMOKU_A_PREV_2",
+        "ICHIMOKU_B_PREV_2",
     ]:
         assert key in indicators
         assert math.isfinite(indicators[key])

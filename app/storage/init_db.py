@@ -4,17 +4,14 @@ Database Initialization Script
 This script initializes the SQLite database with default data for the SignalGen system.
 It creates the database schema and seeds it with the default scalping rule and initial settings.
 
-Default Rule (Updated for Advanced Scalping):
+Default Rules:
 - NAME: "Default Scalping"
 - TYPE: "system"
-- LOGIC: "AND" with 11 conditions
+- LOGIC: "AND" with 4 conditions
 - CONDITIONS:
-  * EMA6 CROSS_UP EMA10 (momentum entry)
-  * PRICE >= EMA20 AND PRICE_EMA20_DIFF_PCT <= 0.002 (max 0.2% from EMA20)
-  * RSI14 > RSI14_PREV AND 38 < RSI14 < 55 (rising momentum)
-  * ADX5 >= 15 AND ADX5 > ADX5_PREV (strong trend)
-  * REL_VOLUME_20 >= 1.3 (volume confirmation)
-  * MACD_HIST >= MACD_HIST_PREV (histogram rising)
+  * EMA9 > EMA20 (short-term trend)
+  * PRICE > EMA9 (momentum continuation)
+  * 45 < RSI14 < 75 (healthy momentum)
 - IS_SYSTEM: true (readonly, cannot be deleted)
 
 Initial Settings:
@@ -22,6 +19,7 @@ Initial Settings:
 - default_cooldown_sec: 60 (default cooldown between signals)
 """
 
+import json
 import logging
 from datetime import datetime
 from .sqlite_repo import SQLiteRepository
@@ -67,54 +65,89 @@ def _seed_default_rule(repo: SQLiteRepository) -> None:
     Args:
         repo: SQLiteRepository instance
     """
-    # Check if default rule already exists
-    existing_rules = repo.get_all_rules()
-    for rule in existing_rules:
-        if rule.get('is_system') and rule['name'] == "Default Scalping":
-            logger.info("Default rule already exists, skipping seeding")
-            return
-    
-    # Create default scalping rule as specified in PROJECT_SPRINT_PHASE1.md
-    default_rule_definition = {
-        "id": 1,
-        "name": "Default Scalping",
-        "type": "system",
-        "logic": "AND",
-        "signal_type": "BUY",
-        "conditions": [
-            # EMA 6/10 Crossover
-            {"left": "EMA6", "op": "CROSS_UP", "right": "EMA10"},
-            
-            # Price near EMA20 (max 0.2% away)
-            {"left": "PRICE", "op": ">=", "right": "EMA20"},
-            {"left": "PRICE_EMA20_DIFF_PCT", "op": "<=", "right": 0.002},  # Max 0.2%
-            
-            # RSI momentum (38 < RSI < 55, rising)
-            {"left": "RSI14", "op": ">", "right": "RSI14_PREV"},
-            {"left": "RSI14", "op": ">", "right": 38},
-            {"left": "RSI14", "op": "<", "right": 55},
-            
-            # ADX trend strength (>= 15, rising)
-            {"left": "ADX5", "op": ">=", "right": 15},
-            {"left": "ADX5", "op": ">", "right": "ADX5_PREV"},
-            
-            # Volume confirmation (>= 1.3x average)
-            {"left": "REL_VOLUME_20", "op": ">=", "right": 1.3},
-            
-            # MACD histogram rising
-            {"left": "MACD_HIST", "op": ">=", "right": "MACD_HIST_PREV"}
-        ],
-        "cooldown_sec": 60
-    }
-    
-    rule_id = repo.create_rule(
-        name="Default Scalping",
-        rule_type="system",
-        definition=default_rule_definition,
-        is_system=True
+    system_rules = [
+        {
+            "id": 1,
+            "name": "Default Scalping",
+            "conditions": [
+                {"left": "EMA9", "op": ">", "right": "EMA20"},
+                {"left": "PRICE", "op": ">", "right": "EMA9"},
+                {"left": "RSI14", "op": ">", "right": 45},
+                {"left": "RSI14", "op": "<", "right": 75},
+            ],
+            "cooldown_sec": 60,
+        },
+        {
+            "id": 2,
+            "name": "EMA Momentum Scalping",
+            "conditions": [
+                {"left": "EMA9", "op": ">", "right": "EMA20"},
+                {"left": "MACD", "op": ">", "right": "MACD_SIGNAL"},
+                {"left": "RSI14", "op": ">", "right": 50},
+                {"left": "RSI14", "op": "<", "right": 80},
+            ],
+            "cooldown_sec": 60,
+        },
+        {
+            "id": 3,
+            "name": "BB Pullback Scalping",
+            "conditions": [
+                {"left": "PRICE", "op": "<", "right": "BB_MIDDLE"},
+                {"left": "RSI14", "op": ">", "right": 25},
+                {"left": "RSI14", "op": "<", "right": 45},
+            ],
+            "cooldown_sec": 90,
+        },
+        {
+            "id": 4,
+            "name": "Trend Continuation Scalping",
+            "conditions": [
+                {"left": "PRICE", "op": ">", "right": "EMA20"},
+                {"left": "EMA20", "op": ">", "right": "EMA50"},
+                {"left": "RSI14", "op": ">", "right": 50},
+                {"left": "RSI14", "op": "<", "right": 78},
+            ],
+            "cooldown_sec": 60,
+        },
+    ]
+
+    for rule in system_rules:
+        definition = {
+            "id": rule["id"],
+            "name": rule["name"],
+            "type": "system",
+            "logic": "AND",
+            "signal_type": "BUY",
+            "conditions": rule["conditions"],
+            "cooldown_sec": rule["cooldown_sec"],
+        }
+        _upsert_system_rule(repo, rule["name"], definition)
+
+
+def _upsert_system_rule(repo: SQLiteRepository, name: str, definition: dict) -> None:
+    existing = next(
+        (rule for rule in repo.get_all_rules() if rule.get('is_system') and rule.get('name') == name),
+        None
     )
-    
-    logger.info(f"Created default rule with ID: {rule_id}")
+    if not existing:
+        rule_id = repo.create_rule(
+            name=name,
+            rule_type="system",
+            definition=definition,
+            is_system=True
+        )
+        logger.info(f"Created system rule '{name}' with ID: {rule_id}")
+        return
+
+    with repo._get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE rules
+            SET definition = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND is_system = TRUE
+        ''', (json.dumps(definition), existing['id']))
+        conn.commit()
+    logger.info(f"Updated system rule '{name}'")
 
 def _seed_initial_settings(repo: SQLiteRepository) -> None:
     """

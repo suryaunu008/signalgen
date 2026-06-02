@@ -108,6 +108,7 @@ class IndicatorEngine:
     def _dynamic_requirements(self) -> Dict[str, set]:
         requirements = {
             'price_prev': set(),
+            'prev_n': set(),
             'ma': set(),
             'ema': set(),
             'rsi': set(),
@@ -117,6 +118,11 @@ class IndicatorEngine:
         }
 
         for operand in self.required_operands:
+            prev_n = RuleEngine.parse_prev_n_operand(operand)
+            if prev_n:
+                requirements['prev_n'].add((prev_n['base'], prev_n['offset'], operand))
+                continue
+
             parsed = RuleEngine.parse_dynamic_operand(operand)
             if not parsed:
                 continue
@@ -632,6 +638,157 @@ class IndicatorEngine:
         })
         
         return df
+
+    def _calculate_operand_series(self, df: pd.DataFrame, operand: str) -> Optional[pd.Series]:
+        """Calculate a full value series for an operand so generic PREV_N can read older values."""
+        parsed = RuleEngine.parse_dynamic_operand(operand)
+
+        if operand == 'PRICE' or operand == 'CLOSE':
+            return df['close']
+        if operand == 'OPEN':
+            return df['open']
+        if operand == 'HIGH':
+            return df['high']
+        if operand == 'LOW':
+            return df['low']
+        if operand == 'VOLUME':
+            return df['volume']
+        if operand == 'PREV_CLOSE':
+            return df['close'].shift(1)
+        if operand == 'PREV_OPEN':
+            return df['open'].shift(1)
+        if operand in {'OPEN_PREV', 'HIGH_PREV', 'LOW_PREV', 'CLOSE_PREV'}:
+            field = operand[:-5].lower()
+            return df[field].shift(1)
+        if operand == 'PRICE_EMA20_DIFF_PCT':
+            ema20 = ta.trend.ema_indicator(df['close'], window=20)
+            return (df['close'] - ema20).abs() / ema20
+
+        if parsed:
+            period = parsed['period']
+            operand_type = parsed['type']
+            if operand_type == 'PRICE_PREV_N':
+                return df['close'].shift(period)
+            if operand_type == 'MA_N':
+                return ta.trend.sma_indicator(df['close'], window=period)
+            if operand_type == 'EMA_N':
+                return ta.trend.ema_indicator(df['close'], window=period)
+            if operand_type == 'RSI_N':
+                return ta.momentum.rsi(df['close'], window=period)
+            if operand_type == 'ADX_N':
+                return ta.trend.adx(high=df['high'], low=df['low'], close=df['close'], window=period)
+            if operand_type == 'SMA_VOLUME_N':
+                return ta.trend.sma_indicator(df['volume'], window=period)
+            if operand_type == 'REL_VOLUME_N':
+                sma_volume = ta.trend.sma_indicator(df['volume'], window=period)
+                return df['volume'] / sma_volume.where(sma_volume != 0)
+
+        if operand.startswith('MA') and operand[2:].isdigit():
+            return ta.trend.sma_indicator(df['close'], window=int(operand[2:]))
+        if operand.startswith('EMA') and operand[3:].isdigit():
+            return ta.trend.ema_indicator(df['close'], window=int(operand[3:]))
+        if operand.startswith('RSI') and operand[3:].isdigit():
+            return ta.momentum.rsi(df['close'], window=int(operand[3:]))
+        if operand.startswith('ADX') and operand[3:].isdigit():
+            return ta.trend.adx(high=df['high'], low=df['low'], close=df['close'], window=int(operand[3:]))
+        if operand.startswith('SMA_VOLUME_') and operand[11:].isdigit():
+            return ta.trend.sma_indicator(df['volume'], window=int(operand[11:]))
+        if operand.startswith('REL_VOLUME_') and operand[11:].isdigit():
+            period = int(operand[11:])
+            sma_volume = ta.trend.sma_indicator(df['volume'], window=period)
+            return df['volume'] / sma_volume.where(sma_volume != 0)
+
+        if operand == 'MACD':
+            return ta.trend.macd(df['close'], window_fast=self.macd_fast, window_slow=self.macd_slow)
+        if operand == 'MACD_SIGNAL':
+            return ta.trend.macd_signal(
+                df['close'],
+                window_fast=self.macd_fast,
+                window_slow=self.macd_slow,
+                window_sign=self.macd_signal
+            )
+        if operand == 'MACD_HIST':
+            return ta.trend.macd_diff(
+                df['close'],
+                window_fast=self.macd_fast,
+                window_slow=self.macd_slow,
+                window_sign=self.macd_signal
+            )
+        if operand == 'BB_UPPER':
+            return ta.volatility.bollinger_hband(df['close'], window=self.bb_period, window_dev=self.bb_std_dev)
+        if operand == 'BB_MIDDLE':
+            return ta.volatility.bollinger_mavg(df['close'], window=self.bb_period)
+        if operand == 'BB_LOWER':
+            return ta.volatility.bollinger_lband(df['close'], window=self.bb_period, window_dev=self.bb_std_dev)
+        if operand == 'BB_WIDTH':
+            upper = ta.volatility.bollinger_hband(df['close'], window=self.bb_period, window_dev=self.bb_std_dev)
+            lower = ta.volatility.bollinger_lband(df['close'], window=self.bb_period, window_dev=self.bb_std_dev)
+            return upper - lower
+        if operand == 'STOCH_K':
+            return ta.momentum.stoch(
+                high=df['high'],
+                low=df['low'],
+                close=df['close'],
+                window=self.stoch_window,
+                smooth_window=self.stoch_smooth_window
+            )
+        if operand == 'STOCH_D':
+            return ta.momentum.stoch_signal(
+                high=df['high'],
+                low=df['low'],
+                close=df['close'],
+                window=self.stoch_window,
+                smooth_window=self.stoch_smooth_window
+            )
+        if operand in {'ICHIMOKU_CONVERSION', 'ICHIMOKU_BASE', 'ICHIMOKU_A', 'ICHIMOKU_B'}:
+            conversion = ta.trend.ichimoku_conversion_line(
+                high=df['high'],
+                low=df['low'],
+                window1=self.ichimoku_conversion,
+                window2=self.ichimoku_base
+            )
+            base = ta.trend.ichimoku_base_line(
+                high=df['high'],
+                low=df['low'],
+                window1=self.ichimoku_conversion,
+                window2=self.ichimoku_base
+            )
+            span_a = ta.trend.ichimoku_a(
+                high=df['high'],
+                low=df['low'],
+                window1=self.ichimoku_conversion,
+                window2=self.ichimoku_base,
+                visual=False
+            )
+            span_b = ta.trend.ichimoku_b(
+                high=df['high'],
+                low=df['low'],
+                window2=self.ichimoku_base,
+                window3=self.ichimoku_span_b,
+                visual=False
+            )
+            return {
+                'ICHIMOKU_CONVERSION': conversion,
+                'ICHIMOKU_BASE': base,
+                'ICHIMOKU_A': span_a,
+                'ICHIMOKU_B': span_b,
+            }[operand]
+
+        return None
+
+    def _add_prev_n_indicators(self, indicators: Dict[str, float], df: pd.DataFrame, prev_requirements: set) -> None:
+        for base_operand, offset, target_operand in sorted(prev_requirements):
+            if len(df) <= offset:
+                continue
+            try:
+                series = self._calculate_operand_series(df, base_operand)
+                if series is None:
+                    continue
+                value = series.iloc[-(offset + 1)]
+                if value is not None and not pd.isna(value):
+                    indicators[target_operand] = float(value)
+            except Exception:
+                continue
     
     def _calculate_indicators_for_symbol(self, symbol: str, suppress_warnings: bool = False) -> None:
         """
@@ -655,6 +812,9 @@ class IndicatorEngine:
         if len(df) == 0:
             return
         
+        current_open = float(df['open'].iloc[-1])
+        current_high = float(df['high'].iloc[-1])
+        current_low = float(df['low'].iloc[-1])
         current_price = float(df['close'].iloc[-1])
         dynamic = self._dynamic_requirements()
         
@@ -663,11 +823,19 @@ class IndicatorEngine:
         
         # Basic price data
         indicators['PRICE'] = current_price
+        indicators['OPEN'] = current_open
+        indicators['HIGH'] = current_high
+        indicators['LOW'] = current_low
+        indicators['CLOSE'] = current_price
         
         # Previous candle data
         if len(df) >= 2:
             indicators['PREV_CLOSE'] = float(df['close'].iloc[-2])
             indicators['PREV_OPEN'] = float(df['open'].iloc[-2])
+            indicators['OPEN_PREV'] = float(df['open'].iloc[-2])
+            indicators['HIGH_PREV'] = float(df['high'].iloc[-2])
+            indicators['LOW_PREV'] = float(df['low'].iloc[-2])
+            indicators['CLOSE_PREV'] = float(df['close'].iloc[-2])
 
         for period in dynamic['price_prev']:
             if len(df) > period:
@@ -864,6 +1032,8 @@ class IndicatorEngine:
                 # Log if prev_indicators is empty for debugging
                 if not suppress_warnings:
                     self.logger.debug(f"No previous indicators available for {symbol} yet")
+
+            self._add_prev_n_indicators(indicators, df, dynamic['prev_n'])
         
         except Exception as e:
             if not suppress_warnings:

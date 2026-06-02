@@ -51,6 +51,7 @@ class RuleEngine:
     # Supported operands for rule conditions
     MAX_DYNAMIC_PERIOD = 250
     MIN_DYNAMIC_PERIOD = 1
+    PREV_N_PATTERN = re.compile(r"^(.+)_PREV_(\d+)$")
     DYNAMIC_OPERAND_PATTERNS = {
         "PRICE_PREV_N": re.compile(r"^PRICE_PREV_(\d+)$"),
         "MA_N": re.compile(r"^MA(\d+)$"),
@@ -65,6 +66,8 @@ class RuleEngine:
     SUPPORTED_OPERANDS = {
         # Price indicators
         "PRICE",                    # Current price
+        "OPEN", "HIGH", "LOW", "CLOSE",  # Current candle OHLC values
+        "OPEN_PREV", "HIGH_PREV", "LOW_PREV", "CLOSE_PREV",  # Previous candle OHLC values
         "PREV_CLOSE",              # Previous candle close
         "PREV_OPEN",               # Previous candle open
         
@@ -175,12 +178,37 @@ class RuleEngine:
         return None
 
     @classmethod
+    def parse_prev_n_operand(cls, operand: Union[str, int, float]) -> Union[Dict[str, Any], None]:
+        """Parse generic previous-value operands such as EMA20_PREV_3 or CLOSE_PREV_5."""
+        if not isinstance(operand, str):
+            return None
+
+        match = cls.PREV_N_PATTERN.match(operand)
+        if not match:
+            return None
+
+        base = match.group(1)
+        offset = int(match.group(2))
+        if offset < cls.MIN_DYNAMIC_PERIOD or offset > cls.MAX_DYNAMIC_PERIOD:
+            return None
+        if base.endswith("_PREV") or cls.parse_prev_n_operand(base):
+            return None
+        if not cls._is_valid_base_operand(base):
+            return None
+
+        return {
+            "type": "PREV_N",
+            "base": base,
+            "offset": offset,
+        }
+
+    @classmethod
     def is_dynamic_operand(cls, operand: Union[str, int, float]) -> bool:
-        return cls.parse_dynamic_operand(operand) is not None
+        return cls.parse_dynamic_operand(operand) is not None or cls.parse_prev_n_operand(operand) is not None
 
     @classmethod
     def is_crossable_operand(cls, operand: Union[str, int, float]) -> bool:
-        if not isinstance(operand, str) or operand.endswith("_PREV"):
+        if not isinstance(operand, str) or operand.endswith("_PREV") or cls.parse_prev_n_operand(operand):
             return False
         if operand in cls.get_crossable_operands():
             return True
@@ -199,7 +227,7 @@ class RuleEngine:
                 operand = condition.get(side)
                 if isinstance(operand, str) and not cls._is_numeric_literal(operand):
                     required.add(operand)
-                    if op in cross_ops and not operand.endswith("_PREV"):
+                    if op in cross_ops and not operand.endswith("_PREV") and not cls.parse_prev_n_operand(operand):
                         required.add(f"{operand}_PREV")
         return required
 
@@ -214,6 +242,10 @@ class RuleEngine:
 
         is_prev = operand.endswith("_PREV")
         base_operand = operand[:-5] if is_prev else operand
+        prev_n = cls.parse_prev_n_operand(operand)
+        if prev_n:
+            return cls.estimate_operand_warmup(prev_n["base"]) + prev_n["offset"]
+
         parsed = cls.parse_dynamic_operand(operand)
 
         if parsed:
@@ -230,7 +262,8 @@ class RuleEngine:
             return warmup + (1 if is_prev else 0)
 
         static_warmup = {
-            "PRICE": 1, "PREV_CLOSE": 2, "PREV_OPEN": 2,
+            "PRICE": 1, "OPEN": 1, "HIGH": 1, "LOW": 1, "CLOSE": 1,
+            "PREV_CLOSE": 2, "PREV_OPEN": 2,
             "MACD": 35, "MACD_SIGNAL": 35, "MACD_HIST": 35,
             "BB_UPPER": 20, "BB_MIDDLE": 20, "BB_LOWER": 20, "BB_WIDTH": 20,
             "STOCH_K": 17, "STOCH_D": 17,
@@ -274,6 +307,14 @@ class RuleEngine:
             except ValueError:
                 return False
         return False
+
+    @classmethod
+    def _is_valid_base_operand(cls, operand: Union[str, int, float]) -> bool:
+        if cls._is_numeric_literal(operand):
+            return True
+        if not isinstance(operand, str):
+            return False
+        return operand in cls.SUPPORTED_OPERANDS or cls.parse_dynamic_operand(operand) is not None
     
     def __init__(self):
         """Initialize the rule engine with supported operators."""
