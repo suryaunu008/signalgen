@@ -1004,10 +1004,23 @@ class SwingTradingUI {
       const item = document.createElement('div');
       item.className = 'rounded-md border border-gray-200 bg-white px-3 py-2 text-sm font-mono text-gray-800';
       const prefix = index === 0 ? 'WHEN' : (rule.logic || 'AND');
-      item.textContent = `${prefix} ${this.formatOperand(condition.left)} ${condition.op || '?'} ${this.formatOperand(condition.right)}`;
+      item.textContent = `${prefix} ${this.formatCondition(condition)}`;
       list.appendChild(item);
     });
     panel.appendChild(list);
+  }
+
+  formatConditionOperand(operand, multiplier = 1) {
+    const text = this.formatOperand(operand);
+    const numericMultiplier = Number(multiplier ?? 1);
+    if (!Number.isFinite(numericMultiplier) || numericMultiplier <= 0 || numericMultiplier === 1) {
+      return text;
+    }
+    return `${numericMultiplier} * ${text}`;
+  }
+
+  formatCondition(condition) {
+    return `${this.formatConditionOperand(condition.left, condition.left_multiplier)} ${condition.op || '?'} ${this.formatConditionOperand(condition.right, condition.right_multiplier)}`;
   }
 
   toggleChartRuler() {

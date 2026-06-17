@@ -27,6 +27,7 @@ MVP Limitations:
 
 import json
 import logging
+import math
 import re
 from typing import Dict, Any, List, Union
 
@@ -428,8 +429,10 @@ class RuleEngine:
                 return self._evaluate_cross_down(left_operand, right_operand, indicator_values)
             
             # Get values for operands
-            left_value = self._get_operand_value(left_operand, indicator_values)
-            right_value = self._get_operand_value(right_operand, indicator_values)
+            left_multiplier = self._get_condition_multiplier(condition, "left")
+            right_multiplier = self._get_condition_multiplier(condition, "right")
+            left_value = self._get_operand_value(left_operand, indicator_values) * left_multiplier
+            right_value = self._get_operand_value(right_operand, indicator_values) * right_multiplier
             
             # Log condition evaluation for debugging
             result = self.operators.get(operator)(left_value, right_value)
@@ -499,7 +502,12 @@ class RuleEngine:
             if operator not in self.SUPPORTED_OPERATORS:
                 raise RuleValidationError(f"Unsupported operator: {operator}")
 
+            left_multiplier = self._parse_multiplier(condition.get("left_multiplier", 1.0))
+            right_multiplier = self._parse_multiplier(condition.get("right_multiplier", 1.0))
+
             if operator in {"CROSS_UP", "CROSS_DOWN"}:
+                if left_multiplier != 1.0 or right_multiplier != 1.0:
+                    raise RuleValidationError(f"{operator} does not support operand multipliers")
                 if not self.is_crossable_operand(left_operand):
                     raise RuleValidationError(
                         f"{operator} left operand must have a previous value: {left_operand}"
@@ -547,6 +555,27 @@ class RuleEngine:
             raise
         except Exception as e:
             raise RuleValidationError(f"Failed to parse rule definition: {str(e)}")
+
+    @classmethod
+    def _parse_multiplier(cls, value: Union[str, int, float, None]) -> float:
+        if value is None or value == "":
+            return 1.0
+        if isinstance(value, bool):
+            raise RuleValidationError("Multiplier must be a positive number")
+        try:
+            multiplier = float(value)
+        except (TypeError, ValueError):
+            raise RuleValidationError("Multiplier must be a positive number")
+        if not math.isfinite(multiplier) or multiplier <= 0:
+            raise RuleValidationError("Multiplier must be a positive number")
+        return multiplier
+
+    @classmethod
+    def _get_condition_multiplier(cls, condition: Dict[str, Any], side: str) -> float:
+        try:
+            return cls._parse_multiplier(condition.get(f"{side}_multiplier", 1.0))
+        except RuleValidationError as e:
+            raise RuleEvaluationError(str(e))
     
     def _get_operand_value(self, operand: Union[str, int, float], indicator_values: Dict[str, float]) -> float:
         """

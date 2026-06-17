@@ -187,6 +187,8 @@ class SignalGenApp {
   }
 
   populateConditionRowControls(row) {
+    this.ensureConditionMultiplierControls(row);
+
     const leftSelect = row.querySelector(".condition-left");
     const opSelect = row.querySelector(".condition-op");
     const rightSelect = row.querySelector(".condition-right");
@@ -1076,6 +1078,9 @@ class SignalGenApp {
         let left = row.querySelector(".condition-left").value;
         const op = row.querySelector(".condition-op").value;
         let right = row.querySelector(".condition-right").value;
+        const leftMultiplier = this.getConditionMultiplier(row, "left", index, validationErrors);
+        const rightMultiplier = this.getConditionMultiplier(row, "right", index, validationErrors);
+        if (leftMultiplier === null || rightMultiplier === null) return;
 
         // Handle custom numeric input for left side
         if (left === "_CUSTOM_") {
@@ -1147,6 +1152,12 @@ class SignalGenApp {
         }
 
         if (this.isCrossOperator(op)) {
+          if (leftMultiplier !== 1 || rightMultiplier !== 1) {
+            validationErrors.push(
+              `Condition ${index + 1}: ${op} does not support multipliers`
+            );
+            return;
+          }
           const crossable = new Set(this.getCrossableOperands());
           if (typeof left === "number" || (!crossable.has(left) && !this.isDynamicCrossableOperand(left))) {
             validationErrors.push(
@@ -1162,7 +1173,10 @@ class SignalGenApp {
           }
         }
 
-        conditions.push({ left, op, right });
+        const condition = { left, op, right };
+        if (leftMultiplier !== 1) condition.left_multiplier = leftMultiplier;
+        if (rightMultiplier !== 1) condition.right_multiplier = rightMultiplier;
+        conditions.push(condition);
       });
 
       // Check for validation errors
@@ -1250,6 +1264,10 @@ class SignalGenApp {
             <select class="condition-left w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
               ${this.getOperandOptionsHTML()}
             </select>
+            <div class="condition-left-multiplier-wrap mt-2 flex items-center gap-2">
+              <span class="text-xs font-semibold uppercase text-gray-500">x</span>
+              <input type="number" step="any" min="0.000001" class="condition-left-multiplier w-24 px-2 py-1.5 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white" value="1" title="Left multiplier">
+            </div>
           </div>
           <div>
             <div class="mb-1 text-xs font-semibold uppercase text-gray-500">Operator</div>
@@ -1262,6 +1280,10 @@ class SignalGenApp {
             <select class="condition-right w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
               ${this.getOperandOptionsHTML()}
             </select>
+            <div class="condition-right-multiplier-wrap mt-2 flex items-center gap-2">
+              <span class="text-xs font-semibold uppercase text-gray-500">x</span>
+              <input type="number" step="any" min="0.000001" class="condition-right-multiplier w-24 px-2 py-1.5 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white" value="1" title="Right multiplier">
+            </div>
           </div>
           <div class="pt-5">
             <button type="button" class="remove-condition w-11 h-10 bg-red-500 text-white rounded-md hover:bg-red-600 transition-colors" title="Remove condition">
@@ -1280,6 +1302,8 @@ class SignalGenApp {
    * Attach event listeners to condition row
    */
   attachConditionRowListeners(row) {
+    this.ensureConditionMultiplierControls(row);
+
     const leftSelect = row.querySelector(".condition-left");
     const opSelect = row.querySelector(".condition-op");
     const rightSelect = row.querySelector(".condition-right");
@@ -1318,7 +1342,41 @@ class SignalGenApp {
       this.syncConditionRowForOperator(row);
       this.updateConditionSummary(row);
     });
+    multiplierInputs.forEach((input) => {
+      input.addEventListener("input", () => {
+        this.validateMultiplierInput(input);
+        this.updateConditionSummary(row);
+      });
+    });
     this.updateConditionSummary(row);
+  }
+
+  ensureConditionMultiplierControls(row) {
+    if (!row) return;
+
+    ["left", "right"].forEach((side) => {
+      const select = row.querySelector(`.condition-${side}`);
+      if (!select || row.querySelector(`.condition-${side}-multiplier`)) return;
+
+      const wrap = document.createElement("div");
+      wrap.className = `condition-${side}-multiplier-wrap mt-2 flex items-center gap-2`;
+
+      const label = document.createElement("span");
+      label.className = "text-xs font-semibold uppercase text-gray-500";
+      label.textContent = "x";
+
+      const input = document.createElement("input");
+      input.type = "number";
+      input.step = "any";
+      input.min = "0.000001";
+      input.className = `condition-${side}-multiplier w-24 px-2 py-1.5 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white`;
+      input.value = "1";
+      input.title = `${side === "left" ? "Left" : "Right"} multiplier`;
+
+      wrap.appendChild(label);
+      wrap.appendChild(input);
+      select.insertAdjacentElement("afterend", wrap);
+    });
   }
 
   isCrossOperator(operator) {
@@ -1370,6 +1428,8 @@ class SignalGenApp {
 
     ["left", "right"].forEach((side) => {
       const select = row.querySelector(`.condition-${side}`);
+      const multiplierWrap = row.querySelector(`.condition-${side}-multiplier-wrap`);
+      const multiplierInput = row.querySelector(`.condition-${side}-multiplier`);
       if (!select) {
         return;
       }
@@ -1388,7 +1448,39 @@ class SignalGenApp {
           select.value = firstCrossable.value;
         }
       }
+
+      if (multiplierWrap) multiplierWrap.classList.toggle("hidden", crossMode);
+      if (multiplierInput) {
+        multiplierInput.disabled = crossMode;
+        if (crossMode) multiplierInput.value = "1";
+      }
     });
+  }
+
+  validateMultiplierInput(input) {
+    if (!input) return false;
+    const raw = String(input.value || "").trim();
+    const value = raw === "" ? 1 : Number(raw);
+    if (!Number.isFinite(value) || value <= 0) {
+      input.setCustomValidity("Multiplier must be a positive number");
+      input.classList.add("border-red-500");
+      return false;
+    }
+    input.setCustomValidity("");
+    input.classList.remove("border-red-500");
+    return true;
+  }
+
+  getConditionMultiplier(row, side, index, validationErrors) {
+    const input = row.querySelector(`.condition-${side}-multiplier`);
+    if (!input || input.disabled) return 1;
+    if (!this.validateMultiplierInput(input)) {
+      validationErrors.push(`Condition ${index + 1} ${side} multiplier: Invalid positive number`);
+      return null;
+    }
+    const raw = String(input.value || "").trim();
+    if (raw === "") return 1;
+    return Number(raw);
   }
 
   /**
@@ -1827,9 +1919,12 @@ class SignalGenApp {
     const select = row.querySelector(`.condition-${side}`);
     if (!select) return "-";
 
+    let operandText = "";
+
     if (select.value === "_CUSTOM_") {
       const input = row.querySelector(`.condition-${side}-custom`);
-      return input && input.value !== "" ? input.value : "NUMBER";
+      operandText = input && input.value !== "" ? input.value : "NUMBER";
+      return this.formatOperandPreviewWithMultiplier(row, side, operandText);
     }
 
     if (select.value === "_CUSTOM_DYNAMIC_") {
@@ -1839,21 +1934,44 @@ class SignalGenApp {
       const periodInput = row.querySelector(`.condition-${side}-dynamic-period`);
       const type = typeSelect?.value || "EMA";
       const period = periodInput?.value || "N";
-      if (type === "PREV_N") return `${baseSelect?.value || "BASE"}_PREV_${period}`;
+      if (type === "PREV_N") return this.formatOperandPreviewWithMultiplier(row, side, `${baseSelect?.value || "BASE"}_PREV_${period}`);
       if (this.isDynamicPrevPeriodType(type)) {
         const basePeriod = basePeriodInput?.value || "N";
         const prefix = this.getDynamicPrevPeriodPrefix(type);
         if (type === "SMA_VOLUME_PREV_N") {
-          return `${prefix}_${basePeriod}_PREV_${period}`;
+          return this.formatOperandPreviewWithMultiplier(row, side, `${prefix}_${basePeriod}_PREV_${period}`);
         }
-        return `${prefix}${basePeriod}_PREV_${period}`;
+        return this.formatOperandPreviewWithMultiplier(row, side, `${prefix}${basePeriod}_PREV_${period}`);
       }
-      if (type === "PRICE_PREV") return `PRICE_PREV_${period}`;
-      if (type === "SMA_VOLUME") return `SMA_VOLUME_${period}`;
-      return `${type}${period}`;
+      if (type === "PRICE_PREV") return this.formatOperandPreviewWithMultiplier(row, side, `PRICE_PREV_${period}`);
+      if (type === "SMA_VOLUME") return this.formatOperandPreviewWithMultiplier(row, side, `SMA_VOLUME_${period}`);
+      return this.formatOperandPreviewWithMultiplier(row, side, `${type}${period}`);
     }
 
-    return select.value || "-";
+    operandText = select.value || "-";
+    return this.formatOperandPreviewWithMultiplier(row, side, operandText);
+  }
+
+  formatOperandPreviewWithMultiplier(row, side, operandText) {
+    const input = row.querySelector(`.condition-${side}-multiplier`);
+    if (!input || input.disabled) return operandText;
+    const raw = String(input.value || "").trim();
+    const multiplier = raw === "" ? 1 : Number(raw);
+    if (!Number.isFinite(multiplier) || multiplier <= 0 || multiplier === 1) return operandText;
+    return `${raw} * ${operandText}`;
+  }
+
+  formatConditionOperand(operand, multiplier = 1) {
+    const text = typeof operand === "number" ? String(operand) : String(operand ?? "-");
+    const numericMultiplier = Number(multiplier ?? 1);
+    if (!Number.isFinite(numericMultiplier) || numericMultiplier <= 0 || numericMultiplier === 1) {
+      return text;
+    }
+    return `${numericMultiplier} * ${text}`;
+  }
+
+  formatCondition(condition) {
+    return `${this.formatConditionOperand(condition.left, condition.left_multiplier)} ${condition.op || "?"} ${this.formatConditionOperand(condition.right, condition.right_multiplier)}`;
   }
 
   getConditionPreview(row) {
@@ -2536,28 +2654,13 @@ class SignalGenApp {
       );
       conditionsContainer.innerHTML = rule.definition.conditions
         .map((condition, index) => {
-          let leftOperand = condition.left;
-          let rightOperand = condition.right;
-
-          // Handle custom numeric values
-          if (typeof leftOperand === "number") {
-            leftOperand = leftOperand.toString();
-          }
-          if (typeof rightOperand === "number") {
-            rightOperand = rightOperand.toString();
-          }
-
           return `
           <div class="p-3 bg-gray-50 rounded border border-gray-200">
             <div class="flex items-center space-x-2">
               <span class="text-sm font-medium text-gray-700">Condition ${
                 index + 1
               }:</span>
-              <span class="text-sm text-gray-900">${leftOperand}</span>
-              <span class="text-sm font-medium text-blue-600">${
-                condition.op
-              }</span>
-              <span class="text-sm text-gray-900">${rightOperand}</span>
+              <span class="text-sm text-gray-900">${this.escapeHtml(this.formatCondition(condition))}</span>
             </div>
           </div>
         `;
@@ -2636,11 +2739,7 @@ class SignalGenApp {
               (cond, idx) => `
               <div class="flex items-center space-x-2 text-xs bg-white border border-blue-200 rounded p-2">
                 <span class="font-mono text-blue-700">${idx + 1}.</span>
-                <span class="font-medium text-gray-700">${cond.left}</span>
-                <span class="px-2 py-0.5 bg-blue-100 text-blue-800 rounded font-semibold">${
-                  cond.op
-                }</span>
-                <span class="font-medium text-gray-700">${cond.right}</span>
+                <span class="font-medium text-gray-700">${this.escapeHtml(this.formatCondition(cond))}</span>
               </div>
             `
             )

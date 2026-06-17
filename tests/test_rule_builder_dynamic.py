@@ -61,6 +61,43 @@ def test_rule_engine_allows_dynamic_crossable_operands():
     assert engine.evaluate(rule, indicators) is True
 
 
+def test_rule_engine_applies_optional_operand_multipliers():
+    engine = RuleEngine()
+    rule = _rule("PRICE", ">", "MA20")
+    rule["conditions"][0]["right_multiplier"] = 1.2
+
+    engine.validate_rule(rule)
+    assert engine.evaluate(rule, {"PRICE": 121, "MA20": 100}) is True
+    assert engine.evaluate(rule, {"PRICE": 119, "MA20": 100}) is False
+
+
+def test_rule_engine_multiplier_defaults_to_one_for_legacy_rules():
+    engine = RuleEngine()
+    rule = _rule("PRICE", ">", "MA20")
+
+    engine.validate_rule(rule)
+    assert engine.evaluate(rule, {"PRICE": 101, "MA20": 100}) is True
+
+
+@pytest.mark.parametrize("multiplier", [0, -1, float("inf"), "abc"])
+def test_rule_engine_rejects_invalid_multipliers(multiplier):
+    engine = RuleEngine()
+    rule = _rule("PRICE", ">", "MA20")
+    rule["conditions"][0]["right_multiplier"] = multiplier
+
+    with pytest.raises(RuleValidationError):
+        engine.validate_rule(rule)
+
+
+def test_rule_engine_rejects_multipliers_for_cross_operators():
+    engine = RuleEngine()
+    rule = _rule("EMA12", "CROSS_UP", "EMA20")
+    rule["conditions"][0]["left_multiplier"] = 1.1
+
+    with pytest.raises(RuleValidationError):
+        engine.validate_rule(rule)
+
+
 @pytest.mark.parametrize(
     ("left", "right", "indicators"),
     [
