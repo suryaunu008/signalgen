@@ -1058,6 +1058,11 @@ class SwingTradingUI {
   }
 
   getIndicatorSwatchStyle(indicator) {
+    if (indicator.type === 'marker') {
+      if (indicator.direction === 'bearish') return 'background: #dc2626;';
+      if (indicator.direction === 'bullish') return 'background: #16a34a;';
+      return 'background: #7c3aed;';
+    }
     if (indicator.type === 'histogram') {
       return 'background: linear-gradient(90deg, #16a34a 0 50%, #dc2626 50% 100%);';
     }
@@ -1133,11 +1138,11 @@ class SwingTradingUI {
       wickDownColor: '#dc2626'
     });
     candleSeries.setData(candles);
-    this.addSignalMarker(candleSeries, data.signal_time);
+    this.addChartMarkers(candleSeries, data);
     this.chartSeries.push(candleSeries);
     this.attachChartRulerTool(this.chart, mainEl, candleSeries);
 
-    const overlay = (data.indicators || []).filter((item) => item.panel === 'overlay' && this.chartState.enabled.has(item.id));
+    const overlay = (data.indicators || []).filter((item) => item.type !== 'marker' && item.panel === 'overlay' && this.chartState.enabled.has(item.id));
     overlay.forEach((item) => {
       const series = this.addChartSeries(this.chart, item.type || 'line', {
         color: this.getIndicatorColor(item),
@@ -1152,7 +1157,7 @@ class SwingTradingUI {
 
     const grouped = {};
     (data.indicators || [])
-      .filter((item) => item.panel !== 'overlay' && this.chartState.enabled.has(item.id))
+      .filter((item) => item.type !== 'marker' && item.panel !== 'overlay' && this.chartState.enabled.has(item.id))
       .forEach((item) => {
         if (!grouped[item.panel]) grouped[item.panel] = [];
         grouped[item.panel].push(item);
@@ -1560,6 +1565,33 @@ class SwingTradingUI {
     }
     if (typeof chart.addLineSeries === 'function') return chart.addLineSeries(options);
     return chart.addSeries(LW.LineSeries, options);
+  }
+
+  addChartMarkers(series, data) {
+    const markers = [];
+    if (data?.signal_time) {
+      markers.push({
+        time: data.signal_time,
+        position: 'aboveBar',
+        color: '#2563eb',
+        shape: 'arrowDown',
+        text: 'Signal'
+      });
+    }
+
+    (data?.indicators || []).forEach((indicator) => {
+      if (indicator.type !== 'marker' || !this.chartState.enabled.has(indicator.id)) return;
+      (indicator.markers || []).forEach((marker) => markers.push(marker));
+    });
+
+    markers.sort((a, b) => Number(a.time || 0) - Number(b.time || 0));
+    if (typeof series.setMarkers === 'function') {
+      series.setMarkers(markers);
+      return;
+    }
+    if (window.LightweightCharts?.createSeriesMarkers) {
+      window.LightweightCharts.createSeriesMarkers(series, markers);
+    }
   }
 
   addSignalMarker(series, signalTime) {

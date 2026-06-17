@@ -62,6 +62,19 @@ class RuleEngine:
         "REL_VOLUME_N": re.compile(r"^REL_VOLUME_(\d+)$"),
     }
     DYNAMIC_CROSSABLE_TYPES = {"MA_N", "EMA_N", "RSI_N", "ADX_N", "SMA_VOLUME_N", "REL_VOLUME_N"}
+    CANDLE_PATTERN_DEFINITIONS = {
+        "PATTERN_CDLDOJI": {"talib": "CDLDOJI", "label": "DOJI", "direction": "neutral"},
+        "PATTERN_CDLHAMMER": {"talib": "CDLHAMMER", "label": "HAMMER", "direction": "bullish"},
+        "PATTERN_CDLSHOOTINGSTAR": {"talib": "CDLSHOOTINGSTAR", "label": "SHOOTING STAR", "direction": "bearish"},
+        "PATTERN_BULLISH_ENGULFING": {"talib": "CDLENGULFING", "label": "BULLISH ENGULFING", "direction": "bullish"},
+        "PATTERN_BEARISH_ENGULFING": {"talib": "CDLENGULFING", "label": "BEARISH ENGULFING", "direction": "bearish"},
+        "PATTERN_CDLMORNINGSTAR": {"talib": "CDLMORNINGSTAR", "label": "MORNING STAR", "direction": "bullish"},
+        "PATTERN_CDLEVENINGSTAR": {"talib": "CDLEVENINGSTAR", "label": "EVENING STAR", "direction": "bearish"},
+        "PATTERN_CDLHARAMI": {"talib": "CDLHARAMI", "label": "HARAMI", "direction": "neutral"},
+        "PATTERN_CDLPIERCING": {"talib": "CDLPIERCING", "label": "PIERCING", "direction": "bullish"},
+        "PATTERN_CDLDARKCLOUDCOVER": {"talib": "CDLDARKCLOUDCOVER", "label": "DARK CLOUD COVER", "direction": "bearish"},
+    }
+    CANDLE_PATTERN_OPERANDS = set(CANDLE_PATTERN_DEFINITIONS.keys())
 
     SUPPORTED_OPERANDS = {
         # Price indicators
@@ -122,6 +135,9 @@ class RuleEngine:
         
         # Calculated metrics
         "PRICE_EMA20_DIFF_PCT",    # Percentage difference between PRICE and EMA20
+
+        # TA-Lib candle pattern signals
+        *CANDLE_PATTERN_OPERANDS,
     }
     
     # Supported operators for rule conditions
@@ -260,6 +276,9 @@ class RuleEngine:
             else:
                 warmup = period
             return warmup + (1 if is_prev else 0)
+
+        if base_operand in cls.CANDLE_PATTERN_OPERANDS:
+            return 5 + (1 if is_prev else 0)
 
         static_warmup = {
             "PRICE": 1, "OPEN": 1, "HIGH": 1, "LOW": 1, "CLOSE": 1,

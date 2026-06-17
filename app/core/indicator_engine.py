@@ -40,6 +40,7 @@ import logging
 import pandas as pd
 import numpy as np
 import ta
+import talib
 
 from .candle_builder import CandleBuilder
 from .rule_engine import RuleEngine
@@ -643,6 +644,8 @@ class IndicatorEngine:
         """Calculate a full value series for an operand so generic PREV_N can read older values."""
         parsed = RuleEngine.parse_dynamic_operand(operand)
 
+        if operand in RuleEngine.CANDLE_PATTERN_OPERANDS:
+            return self._calculate_candle_pattern_series(df, operand)
         if operand == 'PRICE' or operand == 'CLOSE':
             return df['close']
         if operand == 'OPEN':
@@ -775,6 +778,45 @@ class IndicatorEngine:
             }[operand]
 
         return None
+
+    def _calculate_candle_pattern_series(self, df: pd.DataFrame, operand: str) -> Optional[pd.Series]:
+        definition = RuleEngine.CANDLE_PATTERN_DEFINITIONS.get(operand)
+        if not definition:
+            return None
+
+        pattern_func = getattr(talib, definition["talib"], None)
+        if pattern_func is None:
+            return None
+
+        raw = pd.Series(
+            pattern_func(
+                df['open'].astype(float).to_numpy(),
+                df['high'].astype(float).to_numpy(),
+                df['low'].astype(float).to_numpy(),
+                df['close'].astype(float).to_numpy(),
+            ),
+            index=df.index,
+        )
+        direction = definition.get("direction")
+        if direction == "bullish":
+            return (raw > 0).astype(float)
+        if direction == "bearish":
+            return (raw < 0).astype(float)
+        return (raw != 0).astype(float)
+
+    def _add_candle_pattern_indicators(self, indicators: Dict[str, float], df: pd.DataFrame) -> None:
+        if len(df) < 1:
+            return
+        for operand in sorted(RuleEngine.CANDLE_PATTERN_OPERANDS):
+            try:
+                series = self._calculate_candle_pattern_series(df, operand)
+                if series is None or series.empty:
+                    continue
+                value = series.iloc[-1]
+                if value is not None and not pd.isna(value):
+                    indicators[operand] = float(value)
+            except Exception:
+                continue
 
     def _add_prev_n_indicators(self, indicators: Dict[str, float], df: pd.DataFrame, prev_requirements: set) -> None:
         for base_operand, offset, target_operand in sorted(prev_requirements):
@@ -1018,6 +1060,8 @@ class IndicatorEngine:
                 if ema20 != 0:
                     price_ema20_diff_pct = abs(current_price - ema20) / ema20
                     indicators['PRICE_EMA20_DIFF_PCT'] = float(price_ema20_diff_pct)
+
+            self._add_candle_pattern_indicators(indicators, df)
             
             # Add previous values with _PREV suffix
             if symbol in self.prev_indicators and self.prev_indicators[symbol]:

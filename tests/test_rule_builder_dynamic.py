@@ -1,6 +1,8 @@
 import math
 
+import numpy as np
 import pytest
+import talib
 
 from app.core.indicator_engine import IndicatorEngine
 from app.core.rule_engine import RuleEngine, RuleValidationError
@@ -30,6 +32,9 @@ def test_rule_engine_accepts_existing_and_dynamic_operands():
         _rule("REL_VOLUME_10", ">=", 1.3),
         _rule("STOCH_K", ">", "STOCH_D"),
         _rule("ICHIMOKU_CONVERSION", ">", "ICHIMOKU_BASE"),
+        _rule("PATTERN_CDLDOJI", ">", 0),
+        _rule("PATTERN_BULLISH_ENGULFING", ">", 0),
+        _rule("PATTERN_CDLHAMMER_PREV_1", ">", 0),
     ]:
         engine.validate_rule(rule)
 
@@ -234,3 +239,60 @@ def test_indicator_engine_warmup_for_stochastic_and_ichimoku_operands():
 
     ichimoku_engine.update_candle_data("TSLA", 153, 154, 152, 153, 53 * 60.0, 553)
     assert ichimoku_engine.is_symbol_ready("TSLA") is True
+
+
+def test_indicator_engine_generates_talib_candle_pattern_values(monkeypatch):
+    def fake_doji(open_, high, low, close):
+        values = np.zeros(len(close), dtype=int)
+        values[-1] = 100
+        return values
+
+    def fake_engulfing(open_, high, low, close):
+        values = np.zeros(len(close), dtype=int)
+        values[-1] = -100
+        return values
+
+    monkeypatch.setattr(talib, "CDLDOJI", fake_doji)
+    monkeypatch.setattr(talib, "CDLENGULFING", fake_engulfing)
+
+    indicator_engine = IndicatorEngine(timeframe="1m")
+    indicator_engine.set_required_operands({
+        "PATTERN_CDLDOJI",
+        "PATTERN_BULLISH_ENGULFING",
+        "PATTERN_BEARISH_ENGULFING",
+        "PATTERN_CDLDOJI_PREV_1",
+    })
+
+    for i in range(1, 8):
+        price = 100 + i
+        indicator_engine.update_candle_data(
+            symbol="AAPL",
+            open_price=float(price),
+            high=float(price + 1),
+            low=float(price - 1),
+            close=float(price),
+            timestamp=float(i * 60),
+            volume=100 + i,
+        )
+
+    indicators = indicator_engine.get_indicators("AAPL")
+
+    assert indicators["PATTERN_CDLDOJI"] == 1.0
+    assert indicators["PATTERN_BULLISH_ENGULFING"] == 0.0
+    assert indicators["PATTERN_BEARISH_ENGULFING"] == 1.0
+    assert indicators["PATTERN_CDLDOJI_PREV_1"] == 0.0
+
+
+def test_rule_engine_warmup_for_candle_pattern_prev_n():
+    engine = IndicatorEngine(timeframe="1m")
+    engine.set_required_operands(_rule("PATTERN_CDLHAMMER_PREV_1", ">", 0))
+
+    for i in range(1, 6):
+        price = 50 + i
+        engine.update_candle_data("AMD", price, price + 1, price - 1, price, float(i * 60), 100 + i)
+
+    assert engine.is_symbol_ready("AMD") is False
+
+    engine.update_candle_data("AMD", 56, 57, 55, 56, 6 * 60.0, 106)
+    engine.update_candle_data("AMD", 57, 58, 56, 57, 7 * 60.0, 107)
+    assert engine.is_symbol_ready("AMD") is True

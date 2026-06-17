@@ -250,13 +250,24 @@ class SignalGenApp {
       ],
       Volume: ["VOLUME", "SMA_VOLUME_20"],
       "Calculated Metrics": ["PRICE_EMA20_DIFF_PCT"],
+      "Candle Pattern": [
+        "PATTERN_CDLDOJI",
+        "PATTERN_CDLHAMMER",
+        "PATTERN_CDLSHOOTINGSTAR",
+        "PATTERN_BULLISH_ENGULFING",
+        "PATTERN_BEARISH_ENGULFING",
+      ],
     };
+    const labels = this.ruleSchema?.operand_labels || {};
     const groups = this.ruleSchema?.operand_groups || fallbackGroups;
     const groupHtml = Object.entries(groups)
       .filter(([, operands]) => operands && operands.length)
       .map(([label, operands]) => {
         const options = operands
-          .map((operand) => `<option value="${this.escapeHtml(operand)}">${this.escapeHtml(operand)}</option>`)
+          .map((operand) => {
+            const text = labels[operand] || operand;
+            return `<option value="${this.escapeHtml(operand)}">${this.escapeHtml(text)}</option>`;
+          })
           .join("");
         return `<optgroup label="${this.escapeHtml(label)}">${options}</optgroup>`;
       })
@@ -1695,12 +1706,23 @@ class SignalGenApp {
       "Ichimoku Cloud": ["ICHIMOKU_CONVERSION", "ICHIMOKU_BASE", "ICHIMOKU_A", "ICHIMOKU_B"],
       Volume: ["VOLUME", "SMA_VOLUME_20"],
       "Calculated Metrics": ["PRICE_EMA20_DIFF_PCT"],
+      "Candle Pattern": [
+        "PATTERN_CDLDOJI",
+        "PATTERN_CDLHAMMER",
+        "PATTERN_CDLSHOOTINGSTAR",
+        "PATTERN_BULLISH_ENGULFING",
+        "PATTERN_BEARISH_ENGULFING",
+      ],
     };
+    const labels = this.ruleSchema?.operand_labels || {};
     return Object.entries(groups)
       .map(([label, operands]) => {
         const options = (operands || [])
           .filter((operand) => operand && !String(operand).endsWith("_PREV") && !String(operand).startsWith("PREV_"))
-          .map((operand) => `<option value="${this.escapeHtml(operand)}">${this.escapeHtml(operand)}</option>`)
+          .map((operand) => {
+            const text = labels[operand] || operand;
+            return `<option value="${this.escapeHtml(operand)}">${this.escapeHtml(text)}</option>`;
+          })
           .join("");
         return options ? `<optgroup label="${this.escapeHtml(label)}">${options}</optgroup>` : "";
       })

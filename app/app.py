@@ -516,6 +516,7 @@ class SignalGenApp:
                     ],
                     "Volume": ["VOLUME", "SMA_VOLUME_20"],
                     "Calculated Metrics": ["PRICE_EMA20_DIFF_PCT"],
+                    "Candle Pattern": list(self.rule_engine.CANDLE_PATTERN_DEFINITIONS.keys()),
                 }
                 supported = self.rule_engine.SUPPORTED_OPERANDS
                 filtered_groups = {
@@ -541,6 +542,11 @@ class SignalGenApp:
                 return JSONResponse(content={
                     "operand_groups": quick_operand_groups,
                     "prev_n_base_operand_groups": quick_operand_groups,
+                    "operand_labels": {
+                        operand: definition["label"]
+                        for operand, definition in self.rule_engine.CANDLE_PATTERN_DEFINITIONS.items()
+                    },
+                    "candle_patterns": self.rule_engine.CANDLE_PATTERN_DEFINITIONS,
                     "legacy_operands": sorted(supported - quick_operands),
                     "operands": sorted(supported),
                     "dynamic_operand_templates": [
@@ -1854,6 +1860,7 @@ class SignalGenApp:
                 import math
                 import pandas as pd
                 import ta
+                import talib
                 from datetime import timezone
                 from .data_sources import CachedDataSource, YahooDataSource
 
@@ -1953,6 +1960,63 @@ class SignalGenApp:
                         })
                     return points
 
+                def _candle_pattern_values(operand: str) -> Optional[pd.Series]:
+                    definition = RuleEngine.CANDLE_PATTERN_DEFINITIONS.get(operand)
+                    if not definition:
+                        return None
+                    pattern_func = getattr(talib, definition["talib"], None)
+                    if pattern_func is None:
+                        return None
+                    raw = pd.Series(
+                        pattern_func(
+                            df['open'].astype(float).to_numpy(),
+                            df['high'].astype(float).to_numpy(),
+                            df['low'].astype(float).to_numpy(),
+                            df['close'].astype(float).to_numpy(),
+                        ),
+                        index=df.index,
+                    )
+                    direction = definition.get("direction")
+                    if direction == "bullish":
+                        return (raw > 0).astype(float)
+                    if direction == "bearish":
+                        return (raw < 0).astype(float)
+                    return (raw != 0).astype(float)
+
+                def _pattern_markers_from_operand(operand: str) -> Optional[Dict[str, Any]]:
+                    definition = RuleEngine.CANDLE_PATTERN_DEFINITIONS.get(operand)
+                    values = _candle_pattern_values(operand)
+                    if definition is None or values is None:
+                        return None
+
+                    direction = definition.get("direction", "neutral")
+                    bullish = direction == "bullish"
+                    bearish = direction == "bearish"
+                    markers = []
+                    for idx in range(start_idx, end_idx):
+                        value = values.iloc[idx]
+                        if value is None or pd.isna(value) or float(value) <= 0:
+                            continue
+                        markers.append({
+                            "time": _chart_time(df['timestamp'].iloc[idx]),
+                            "position": "aboveBar" if bearish else "belowBar",
+                            "color": "#dc2626" if bearish else ("#16a34a" if bullish else "#7c3aed"),
+                            "shape": "arrowDown" if bearish else ("arrowUp" if bullish else "circle"),
+                            "text": definition["label"],
+                        })
+
+                    if not markers:
+                        return None
+                    return {
+                        "id": operand,
+                        "label": definition["label"],
+                        "panel": "pattern",
+                        "type": "marker",
+                        "enabled": True,
+                        "direction": direction,
+                        "markers": markers,
+                    }
+
                 def _series_from_operand(operand: str) -> Optional[Dict[str, Any]]:
                     base = operand[:-5] if operand.endswith("_PREV") else operand
                     parsed = RuleEngine.parse_dynamic_operand(base)
@@ -1960,6 +2024,8 @@ class SignalGenApp:
                     series_type = "line"
                     values = None
 
+                    if base in RuleEngine.CANDLE_PATTERN_OPERANDS:
+                        return _pattern_markers_from_operand(base)
                     if base in {"PRICE", "PREV_CLOSE", "PREV_OPEN"} or base.startswith("PRICE_PREV_"):
                         return None
                     if parsed:
