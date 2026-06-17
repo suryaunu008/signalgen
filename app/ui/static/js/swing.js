@@ -24,6 +24,9 @@ class SwingTradingUI {
     this.chart = null;
     this.chartSeries = [];
     this.panelCharts = [];
+    this.chartRulerClickHandler = null;
+    this.chartRulerMoveHandler = null;
+    this.chartRulerRangeHandler = null;
     this.syncingChartRange = false;
   }
 
@@ -115,6 +118,20 @@ class SwingTradingUI {
       });
     }
 
+    document.addEventListener('keydown', (event) => {
+      if (!this.chartState || !['Delete', 'Backspace', 'Escape'].includes(event.key)) return;
+      const target = event.target;
+      if (target?.matches?.('input, textarea, select, [contenteditable="true"]')) return;
+      if (event.key === 'Escape' && this.chartState.rulerStart) {
+        this.chartState.rulerStart = null;
+        this.chartState.rulerPreview = null;
+        this.renderChartRulers();
+        return;
+      }
+      if (!['Delete', 'Backspace'].includes(event.key) || !this.chartState.rulerSelectedId) return;
+      this.deleteChartRuler(this.chartState.rulerSelectedId);
+    });
+
     const rangeMinus = document.getElementById('swing-chart-range-minus');
     if (rangeMinus) rangeMinus.addEventListener('click', () => this.adjustChartRange(-20));
 
@@ -123,6 +140,9 @@ class SwingTradingUI {
 
     const ruleToggle = document.getElementById('swing-chart-rule-toggle');
     if (ruleToggle) ruleToggle.addEventListener('click', () => this.toggleChartRulePanel());
+
+    const rulerToggle = document.getElementById('swing-chart-ruler-toggle');
+    if (rulerToggle) rulerToggle.addEventListener('click', () => this.toggleChartRuler());
   }
 
   async loadRules() {
@@ -838,7 +858,13 @@ class SwingTradingUI {
       before: 80,
       after: 40,
       enabled: new Set(),
-      showRule: false
+      showRule: false,
+      showRuler: false,
+      rulerStart: null,
+      rulerPreview: null,
+      rulerSelectedId: null,
+      rulerNextId: 1,
+      rulers: []
     };
 
     const modal = document.getElementById('swing-chart-modal');
@@ -908,6 +934,7 @@ class SwingTradingUI {
     this.assignIndicatorColors(data.indicators || []);
     this.renderIndicatorToggles(data.indicators || []);
     this.renderChartRulePanel(data.rule || null);
+    this.renderChartRulerToggle();
     this.renderCharts(data);
   }
 
@@ -981,6 +1008,33 @@ class SwingTradingUI {
       list.appendChild(item);
     });
     panel.appendChild(list);
+  }
+
+  toggleChartRuler() {
+    if (!this.chartState) return;
+    this.chartState.showRuler = !this.chartState.showRuler;
+    if (!this.chartState.showRuler) {
+      this.chartState.rulerStart = null;
+      this.chartState.rulerPreview = null;
+    }
+    this.renderChartRulerToggle();
+    if (!this.chartState.data) return;
+    this.renderChartRulers();
+  }
+
+  renderChartRulerToggle() {
+    const toggle = document.getElementById('swing-chart-ruler-toggle');
+    if (!toggle) return;
+
+    const visible = !!this.chartState?.showRuler;
+    toggle.classList.toggle('bg-blue-50', visible);
+    toggle.classList.toggle('border-blue-300', visible);
+    toggle.classList.toggle('text-blue-700', visible);
+    toggle.classList.toggle('hover:bg-blue-100', visible);
+    toggle.classList.toggle('bg-white', !visible);
+    toggle.classList.toggle('border-gray-300', !visible);
+    toggle.classList.toggle('text-gray-700', !visible);
+    toggle.classList.toggle('hover:bg-gray-50', !visible);
   }
 
   formatOperand(value) {
@@ -1081,6 +1135,7 @@ class SwingTradingUI {
     candleSeries.setData(candles);
     this.addSignalMarker(candleSeries, data.signal_time);
     this.chartSeries.push(candleSeries);
+    this.attachChartRulerTool(this.chart, mainEl, candleSeries);
 
     const overlay = (data.indicators || []).filter((item) => item.panel === 'overlay' && this.chartState.enabled.has(item.id));
     overlay.forEach((item) => {
@@ -1136,6 +1191,320 @@ class SwingTradingUI {
     });
 
     this.syncChartTimeScales();
+  }
+
+  attachChartRulerTool(chart, container, series) {
+    if (!chart || !container || !series) return;
+
+    container.classList.add('relative', 'overflow-hidden');
+
+    const overlay = document.createElement('div');
+    overlay.id = 'swing-chart-ruler-overlay';
+    overlay.className = 'pointer-events-none absolute inset-0 z-20';
+    container.appendChild(overlay);
+
+    if (typeof chart.subscribeClick === 'function') {
+      this.chartRulerClickHandler = (param) => {
+        if (!this.chartState?.showRuler) return;
+        const point = this.getRulerPoint(param, container, series);
+        if (!point) return;
+
+        if (!this.chartState.rulerStart) {
+          this.chartState.rulerStart = point;
+          this.chartState.rulerPreview = null;
+          this.renderChartRulers();
+          return;
+        }
+
+        this.chartState.rulers.push({
+          id: this.chartState.rulerNextId++,
+          start: this.chartState.rulerStart,
+          end: point
+        });
+        this.chartState.rulerStart = null;
+        this.chartState.rulerPreview = null;
+        this.renderChartRulers();
+      };
+      chart.subscribeClick(this.chartRulerClickHandler);
+    }
+
+    if (typeof chart.subscribeCrosshairMove === 'function') {
+      this.chartRulerMoveHandler = (param) => {
+        if (!this.chartState?.showRuler || !this.chartState.rulerStart) return;
+        this.chartState.rulerPreview = this.getRulerPoint(param, container, series);
+        this.renderChartRulers();
+      };
+      chart.subscribeCrosshairMove(this.chartRulerMoveHandler);
+    }
+
+    const timeScale = chart.timeScale();
+    if (timeScale && typeof timeScale.subscribeVisibleLogicalRangeChange === 'function') {
+      this.chartRulerRangeHandler = () => this.renderChartRulers();
+      timeScale.subscribeVisibleLogicalRangeChange(this.chartRulerRangeHandler);
+    }
+
+    this.renderChartRulers();
+  }
+
+  getRulerPoint(param, container, series) {
+    const point = param?.point;
+    if (!point || !param.time || typeof series.coordinateToPrice !== 'function') return null;
+
+    const bounds = container.getBoundingClientRect();
+    if (point.x < 0 || point.y < 0 || point.x > bounds.width || point.y > bounds.height) return null;
+
+    const price = Number(series.coordinateToPrice(point.y));
+    if (!Number.isFinite(price)) return null;
+
+    return {
+      time: param.time,
+      price
+    };
+  }
+
+  renderChartRulers() {
+    const overlay = document.getElementById('swing-chart-ruler-overlay');
+    if (!overlay || !this.chart || !this.chartSeries.length) return;
+
+    overlay.innerHTML = '';
+    const width = overlay.clientWidth || overlay.parentElement?.clientWidth || 0;
+    const height = overlay.clientHeight || overlay.parentElement?.clientHeight || 0;
+    if (width <= 0 || height <= 0) return;
+
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'absolute inset-0 h-full w-full overflow-visible');
+    svg.setAttribute('width', String(width));
+    svg.setAttribute('height', String(height));
+    svg.style.pointerEvents = 'none';
+    overlay.appendChild(svg);
+
+    const rulers = this.chartState?.rulers || [];
+    rulers.forEach((ruler) => this.drawChartRuler(svg, overlay, ruler, false));
+
+    if (this.chartState?.rulerStart && this.chartState?.rulerPreview) {
+      this.drawChartRuler(svg, overlay, {
+        id: 'preview',
+        start: this.chartState.rulerStart,
+        end: this.chartState.rulerPreview
+      }, true);
+    }
+  }
+
+  drawChartRuler(svg, overlay, ruler, isPreview) {
+    const start = this.resolveRulerPoint(ruler.start);
+    const end = this.resolveRulerPoint(ruler.end);
+    if (!start || !end) return;
+
+    const isUp = end.price >= start.price;
+    const color = isPreview ? '#64748b' : (isUp ? '#2563eb' : '#f43f5e');
+    const fill = isPreview ? 'rgba(100, 116, 139, 0.18)' : (isUp ? 'rgba(37, 99, 235, 0.22)' : 'rgba(244, 63, 94, 0.22)');
+    const selected = this.chartState?.rulerSelectedId === ruler.id;
+    const strokeWidth = selected ? '3' : '2';
+    const left = Math.min(start.x, end.x);
+    const top = Math.min(start.y, end.y);
+    const rectWidth = Math.abs(end.x - start.x);
+    const rectHeight = Math.abs(end.y - start.y);
+
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('x', String(left));
+    rect.setAttribute('y', String(top));
+    rect.setAttribute('width', String(Math.max(1, rectWidth)));
+    rect.setAttribute('height', String(Math.max(1, rectHeight)));
+    rect.setAttribute('fill', fill);
+    rect.setAttribute('stroke', color);
+    rect.setAttribute('stroke-width', selected ? '1.5' : '1');
+    rect.setAttribute('pointer-events', 'none');
+    svg.appendChild(rect);
+
+    const baseLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    baseLine.setAttribute('x1', String(left));
+    baseLine.setAttribute('y1', String(start.y));
+    baseLine.setAttribute('x2', String(Math.max(start.x, end.x)));
+    baseLine.setAttribute('y2', String(start.y));
+    baseLine.setAttribute('stroke', color);
+    baseLine.setAttribute('stroke-width', '1');
+    baseLine.setAttribute('stroke-dasharray', '4 3');
+    baseLine.setAttribute('pointer-events', 'none');
+    svg.appendChild(baseLine);
+
+    const arrowLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    arrowLine.setAttribute('x1', String(end.x));
+    arrowLine.setAttribute('y1', String(start.y));
+    arrowLine.setAttribute('x2', String(end.x));
+    arrowLine.setAttribute('y2', String(end.y));
+    arrowLine.setAttribute('stroke', color);
+    arrowLine.setAttribute('stroke-width', strokeWidth);
+    arrowLine.setAttribute('stroke-dasharray', isPreview ? '6 4' : '0');
+    arrowLine.setAttribute('pointer-events', 'none');
+    svg.appendChild(arrowLine);
+
+    [
+      { y: start.y, direction: start.y <= end.y ? -1 : 1 },
+      { y: end.y, direction: end.y >= start.y ? 1 : -1 }
+    ].forEach((arrow) => {
+      const arrowHead = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      arrowHead.setAttribute('d', `M ${end.x - 5} ${arrow.y - (arrow.direction * 6)} L ${end.x} ${arrow.y} L ${end.x + 5} ${arrow.y - (arrow.direction * 6)}`);
+      arrowHead.setAttribute('fill', 'none');
+      arrowHead.setAttribute('stroke', color);
+      arrowHead.setAttribute('stroke-width', strokeWidth);
+      arrowHead.setAttribute('stroke-linecap', 'round');
+      arrowHead.setAttribute('stroke-linejoin', 'round');
+      arrowHead.setAttribute('pointer-events', 'none');
+      svg.appendChild(arrowHead);
+    });
+
+    [start, end].forEach((point) => {
+      const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      dot.setAttribute('cx', String(point.x));
+      dot.setAttribute('cy', String(point.y));
+      dot.setAttribute('r', selected ? '5' : '4');
+      dot.setAttribute('fill', '#ffffff');
+      dot.setAttribute('stroke', color);
+      dot.setAttribute('stroke-width', '2');
+      svg.appendChild(dot);
+    });
+
+    const label = document.createElement('div');
+    label.className = [
+      'pointer-events-auto absolute -translate-x-1/2 rounded px-2.5 py-1.5 text-xs font-semibold leading-5 text-white shadow-lg text-center min-w-[104px]',
+      isPreview ? 'bg-slate-600' : (isUp ? 'bg-blue-600' : 'bg-rose-500')
+    ].join(' ');
+    label.style.left = `${Math.min(Math.max(end.x, 58), Math.max(58, overlay.clientWidth - 58))}px`;
+    const labelTop = isUp ? top - 80 : top + rectHeight + 10;
+    label.style.top = `${Math.min(Math.max(labelTop, 6), Math.max(6, overlay.clientHeight - 78))}px`;
+    label.title = isPreview ? 'Ruler preview' : 'Click to select. Use x or Delete to remove.';
+
+    const summary = this.getRulerSummary(ruler);
+    const lines = [summary.price, summary.time, summary.volume];
+    lines.forEach((lineText) => {
+      const line = document.createElement('div');
+      line.textContent = lineText;
+      label.appendChild(line);
+    });
+
+    if (!isPreview) {
+      label.addEventListener('click', (event) => {
+        event.stopPropagation();
+        this.chartState.rulerSelectedId = ruler.id;
+        this.renderChartRulers();
+      });
+
+      const deleteButton = document.createElement('button');
+      deleteButton.type = 'button';
+      deleteButton.className = 'absolute -right-2 -top-2 h-5 w-5 rounded-full bg-black/35 leading-none hover:bg-black/50';
+      deleteButton.title = 'Delete ruler';
+      deleteButton.textContent = 'x';
+      deleteButton.addEventListener('click', (event) => {
+        event.stopPropagation();
+        this.deleteChartRuler(ruler.id);
+      });
+      label.appendChild(deleteButton);
+    }
+    overlay.appendChild(label);
+  }
+
+  resolveRulerPoint(point) {
+    if (!point || !this.chart || !this.chartSeries.length) return null;
+    const series = this.chartSeries[0];
+    const timeScale = this.chart.timeScale();
+    if (!timeScale || typeof timeScale.timeToCoordinate !== 'function' || typeof series.priceToCoordinate !== 'function') return null;
+
+    const x = timeScale.timeToCoordinate(point.time);
+    const y = series.priceToCoordinate(point.price);
+    if (!Number.isFinite(Number(x)) || !Number.isFinite(Number(y))) return null;
+    return { ...point, x: Number(x), y: Number(y) };
+  }
+
+  getRulerSummary(ruler) {
+    const startPrice = Number(ruler.start?.price);
+    const endPrice = Number(ruler.end?.price);
+    const priceDiff = Number.isFinite(startPrice) && Number.isFinite(endPrice)
+      ? endPrice - startPrice
+      : 0;
+    const percent = Number.isFinite(startPrice) && startPrice !== 0 && Number.isFinite(endPrice)
+      ? ((endPrice - startPrice) / startPrice) * 100
+      : 0;
+    const priceSign = priceDiff > 0 ? '+' : '';
+    const percentSign = percent > 0 ? '+' : '';
+    const days = this.formatRulerDays(ruler.start?.time, ruler.end?.time);
+    const stats = this.getRulerCandleStats(ruler.start?.time, ruler.end?.time);
+
+    return {
+      price: `${priceSign}${this.formatRulerValue(priceDiff)} (${percentSign}${this.formatRulerValue(percent)}%) ${stats.bars}`,
+      time: `${stats.bars} bar, ${days}d`,
+      volume: `Vol ${this.formatRulerVolume(stats.volume)}`
+    };
+  }
+
+  formatRulerValue(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return '-';
+    const abs = Math.abs(number);
+    const decimals = abs >= 100 ? 0 : 2;
+    return number.toLocaleString('id-ID', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals
+    });
+  }
+
+  formatRulerDays(startTime, endTime) {
+    const start = this.parseLocalDate(startTime);
+    const end = this.parseLocalDate(endTime);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return '-';
+    const days = Math.abs(end.getTime() - start.getTime()) / 86400000;
+    if (days < 1 && days > 0) return this.formatRulerValue(days);
+    return Math.round(days).toLocaleString('id-ID');
+  }
+
+  getRulerCandleStats(startTime, endTime) {
+    const startMs = this.rulerTimeToMs(startTime);
+    const endMs = this.rulerTimeToMs(endTime);
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+      return { bars: 0, volume: 0 };
+    }
+
+    const from = Math.min(startMs, endMs);
+    const to = Math.max(startMs, endMs);
+    const candles = this.chartState?.data?.candles || [];
+    let bars = 0;
+    let volume = 0;
+
+    candles.forEach((candle) => {
+      const candleMs = this.rulerTimeToMs(candle.time);
+      if (!Number.isFinite(candleMs) || candleMs < from || candleMs > to) return;
+      bars += 1;
+      volume += Number(candle.volume || 0);
+    });
+
+    return { bars, volume };
+  }
+
+  rulerTimeToMs(value) {
+    const date = this.parseLocalDate(value);
+    const ms = date.getTime();
+    return Number.isNaN(ms) ? NaN : ms;
+  }
+
+  formatRulerVolume(value) {
+    const volume = Number(value);
+    if (!Number.isFinite(volume) || volume === 0) return '-';
+
+    const units = [
+      { suffix: 'T', value: 1e12 },
+      { suffix: 'B', value: 1e9 },
+      { suffix: 'M', value: 1e6 },
+      { suffix: 'K', value: 1e3 }
+    ];
+    const unit = units.find((item) => Math.abs(volume) >= item.value);
+    if (!unit) return this.formatRulerValue(volume);
+    return `${this.formatRulerValue(volume / unit.value)} ${unit.suffix}`;
+  }
+
+  deleteChartRuler(id) {
+    if (!this.chartState) return;
+    this.chartState.rulers = (this.chartState.rulers || []).filter((ruler) => ruler.id !== id);
+    if (this.chartState.rulerSelectedId === id) this.chartState.rulerSelectedId = null;
+    this.renderChartRulers();
   }
 
   syncChartTimeScales() {
@@ -1212,9 +1581,24 @@ class SwingTradingUI {
 
   clearCharts() {
     if (this.chart) {
+      if (this.chartRulerClickHandler && typeof this.chart.unsubscribeClick === 'function') {
+        this.chart.unsubscribeClick(this.chartRulerClickHandler);
+      }
+      if (this.chartRulerMoveHandler && typeof this.chart.unsubscribeCrosshairMove === 'function') {
+        this.chart.unsubscribeCrosshairMove(this.chartRulerMoveHandler);
+      }
+      if (this.chartRulerRangeHandler) {
+        const timeScale = this.chart.timeScale();
+        if (timeScale && typeof timeScale.unsubscribeVisibleLogicalRangeChange === 'function') {
+          timeScale.unsubscribeVisibleLogicalRangeChange(this.chartRulerRangeHandler);
+        }
+      }
       this.chart.remove();
       this.chart = null;
     }
+    this.chartRulerClickHandler = null;
+    this.chartRulerMoveHandler = null;
+    this.chartRulerRangeHandler = null;
     this.panelCharts.forEach((chart) => chart.remove());
     this.panelCharts = [];
     this.chartSeries = [];
