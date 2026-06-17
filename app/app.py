@@ -186,6 +186,13 @@ class SwingScreenRequest(BaseModel):
     start_date: Optional[str] = Field(None)  # ISO date/datetime string
     end_date: Optional[str] = Field(None)    # ISO date/datetime string
 
+class YahooBackfillRequest(BaseModel):
+    """Model for warming Yahoo OHLCV cache for a ticker universe."""
+    ticker_universe_id: int = Field(..., gt=0)
+    timeframes: List[str] = Field(default_factory=lambda: ['1d'], max_items=6)
+    start_date: Optional[str] = Field(None)
+    end_date: Optional[str] = Field(None)
+
 class UniverseCreate(BaseModel):
     """Model for creating ticker universe."""
     name: str = Field(..., min_length=1, max_length=100)
@@ -2256,6 +2263,68 @@ class SignalGenApp:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail=f"Screening failed due to an internal error. request_id={request_id}"
+                )
+
+        @self.app.post("/api/swing/backfill-yahoo-cache")
+        async def backfill_yahoo_cache(request: YahooBackfillRequest):
+            """Backfill Yahoo OHLCV cache for all tickers in a universe."""
+            try:
+                from .data_sources import CachedDataSource, YahooDataSource
+
+                supported_timeframes = {"1m", "5m", "15m", "1h", "4h", "1d"}
+                timeframes = []
+                for timeframe in request.timeframes or ["1d"]:
+                    if timeframe not in supported_timeframes:
+                        raise ValueError(f"Unsupported timeframe: {timeframe}")
+                    if timeframe not in timeframes:
+                        timeframes.append(timeframe)
+
+                universe = self.repository.get_ticker_universe(request.ticker_universe_id)
+                if not universe:
+                    raise ValueError(f"Ticker universe {request.ticker_universe_id} not found")
+
+                def _parse_optional_datetime(value: Optional[str], field_name: str) -> Optional[datetime]:
+                    if not value:
+                        return None
+                    try:
+                        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                    except Exception as ex:
+                        raise ValueError(f"Invalid {field_name}: {value}") from ex
+                    if parsed.tzinfo is not None:
+                        parsed = parsed.astimezone().replace(tzinfo=None)
+                    return parsed
+
+                start_date = _parse_optional_datetime(request.start_date, "start_date")
+                end_date = _parse_optional_datetime(request.end_date, "end_date")
+                if start_date and end_date and start_date >= end_date:
+                    raise ValueError("start_date must be before end_date")
+
+                data_source = CachedDataSource(
+                    YahooDataSource(),
+                    self.repository,
+                    data_source_name='yahoo'
+                )
+                summary = await data_source.backfill_symbols(
+                    symbols=universe.get('tickers', []),
+                    timeframes=timeframes,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+                summary["universe_id"] = request.ticker_universe_id
+                summary["universe_name"] = universe.get("name")
+                return summary
+
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(e)
+                )
+            except Exception as e:
+                request_id = str(uuid4())
+                self.logger.exception(f"Yahoo cache backfill error (request_id={request_id}): {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Yahoo cache backfill failed due to an internal error. request_id={request_id}"
                 )
         
         @self.app.get("/api/swing/universes")

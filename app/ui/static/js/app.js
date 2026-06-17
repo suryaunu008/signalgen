@@ -1307,6 +1307,9 @@ class SignalGenApp {
     const leftSelect = row.querySelector(".condition-left");
     const opSelect = row.querySelector(".condition-op");
     const rightSelect = row.querySelector(".condition-right");
+    const multiplierInputs = row.querySelectorAll(
+      ".condition-left-multiplier, .condition-right-multiplier"
+    );
 
     if (!leftSelect || !opSelect || !rightSelect) {
       return;

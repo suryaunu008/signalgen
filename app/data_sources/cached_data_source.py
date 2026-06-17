@@ -85,15 +85,24 @@ class CachedDataSource(BaseDataSource):
             len(cached)
         )
 
-        fetched = await self.wrapped.fetch_historical_data(
-            symbol=symbol,
+        fetch_start, fetch_end = self._refresh_range(
+            cached=cached,
+            coverage=coverage,
             start_date=start_date,
             end_date=end_date,
+            timeframe=timeframe,
+        )
+
+        fetched = await self.wrapped.fetch_historical_data(
+            symbol=symbol,
+            start_date=fetch_start,
+            end_date=fetch_end,
             timeframe=timeframe
         )
         fetched = fetched or []
 
         if fetched:
+            fetched = self._annotate_final_candles(fetched, timeframe)
             upserted = self.repository.upsert_candles(
                 symbol=symbol,
                 timeframe=timeframe,
@@ -107,6 +116,15 @@ class CachedDataSource(BaseDataSource):
                 timeframe,
                 len(fetched),
                 upserted
+            )
+        elif cached:
+            self.logger.info(
+                "OHLCV cache incremental refresh returned no new candles: %s %s %s range=%s..%s",
+                self.data_source_name,
+                symbol.upper(),
+                timeframe,
+                fetch_start.isoformat(),
+                fetch_end.isoformat()
             )
 
         refreshed = self.repository.get_cached_candles(
@@ -125,11 +143,117 @@ class CachedDataSource(BaseDataSource):
         )
         return refreshed
 
+    async def backfill_symbols(
+        self,
+        symbols: List[str],
+        timeframes: List[str],
+        end_date: datetime | None = None,
+        start_date: datetime | None = None
+    ) -> Dict[str, Any]:
+        """
+        Warm the OHLCV cache for multiple symbols/timeframes up to Yahoo limits.
+
+        If start_date is omitted, each timeframe starts from the provider's
+        approximate maximum available range.
+        """
+        end = end_date or datetime.utcnow()
+        summary: Dict[str, Any] = {
+            "symbols": len(symbols),
+            "timeframes": timeframes,
+            "items": [],
+            "total_candles": 0,
+            "errors": [],
+        }
+        for symbol in symbols:
+            normalized_symbol = symbol.upper().strip()
+            if not normalized_symbol:
+                continue
+            for timeframe in timeframes:
+                try:
+                    start = start_date or self._default_backfill_start(timeframe, end)
+                    candles = await self.fetch_historical_data(
+                        symbol=normalized_symbol,
+                        start_date=start,
+                        end_date=end,
+                        timeframe=timeframe,
+                    )
+                    summary["total_candles"] += len(candles)
+                    summary["items"].append({
+                        "symbol": normalized_symbol,
+                        "timeframe": timeframe,
+                        "candles": len(candles),
+                        "start": start.isoformat(),
+                        "end": end.isoformat(),
+                    })
+                except Exception as exc:
+                    error = {
+                        "symbol": normalized_symbol,
+                        "timeframe": timeframe,
+                        "error": str(exc),
+                    }
+                    summary["errors"].append(error)
+                    self.logger.warning("OHLCV backfill failed: %s", error)
+        return summary
+
     async def validate_symbol(self, symbol: str) -> bool:
         return await self.wrapped.validate_symbol(symbol)
 
     def get_supported_timeframes(self) -> List[str]:
         return self.wrapped.get_supported_timeframes()
+
+    def _refresh_range(
+        self,
+        cached: List[Dict[str, Any]],
+        coverage: Dict[str, Any],
+        start_date: datetime,
+        end_date: datetime,
+        timeframe: str
+    ) -> tuple[datetime, datetime]:
+        if not cached:
+            return start_date, end_date
+
+        start = self._normalize_dt(start_date)
+        end = self._normalize_dt(end_date)
+        first = self._normalize_dt(cached[0]['timestamp'])
+        start_is_covered = first <= (start + self._start_coverage_tolerance(timeframe))
+        if not start_is_covered:
+            return start_date, end_date
+
+        non_final_count = coverage.get('non_final_count', 0)
+        refresh_from = coverage.get('last_final_timestamp') or coverage.get('last_timestamp')
+        if refresh_from is None:
+            return start_date, end_date
+
+        refresh_start = self._normalize_dt(refresh_from)
+        step = self._timeframe_delta(timeframe)
+        if non_final_count <= 0:
+            refresh_start = refresh_start + step
+        elif coverage.get('last_final_timestamp') is not None:
+            refresh_start = refresh_start + step
+        refresh_start = max(start, refresh_start)
+        if refresh_start >= end:
+            refresh_start = max(start, end - step)
+        return refresh_start, end_date
+
+    def _annotate_final_candles(self, candles: List[Dict[str, Any]], timeframe: str) -> List[Dict[str, Any]]:
+        now = datetime.utcnow()
+        step = self._timeframe_delta(timeframe)
+        annotated = []
+        for candle in candles:
+            timestamp = self._normalize_dt(candle['timestamp'])
+            is_final = timestamp + step <= now
+            annotated.append({**candle, "is_final": is_final})
+        return annotated
+
+    def _default_backfill_start(self, timeframe: str, end_date: datetime) -> datetime:
+        retention_days = getattr(self.wrapped, "INTRADAY_RETENTION_DAYS", {}).get(timeframe)
+        if retention_days is not None:
+            return end_date - timedelta(days=retention_days)
+        return datetime(1900, 1, 1)
+
+    def _timeframe_delta(self, timeframe: str) -> timedelta:
+        seconds = self.TIMEFRAME_SECONDS.get(timeframe, 86400)
+        return timedelta(seconds=seconds)
 
     def _cache_covers_range(
         self,

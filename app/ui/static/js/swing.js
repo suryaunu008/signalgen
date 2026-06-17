@@ -20,6 +20,7 @@ class SwingTradingUI {
     this.sortKey = 'symbol';
     this.sortDirection = 'asc';
     this.eventsBound = false;
+    this.cacheBackfillInProgress = false;
     this.chartState = null;
     this.chart = null;
     this.chartSeries = [];
@@ -58,6 +59,11 @@ class SwingTradingUI {
         }
         this.runScreening();
       });
+    }
+
+    const fillYahooCacheButton = document.getElementById('fill-yahoo-cache-btn');
+    if (fillYahooCacheButton) {
+      fillYahooCacheButton.addEventListener('click', () => this.fillYahooCache());
     }
 
     const createUniverseBtn = document.getElementById('create-universe-btn');
@@ -336,6 +342,98 @@ class SwingTradingUI {
       button.classList.remove('bg-red-600', 'hover:bg-red-700');
       button.classList.add('bg-green-600', 'hover:bg-green-700');
       button.innerHTML = '<i class="fas fa-search mr-2"></i>Run Screening';
+    }
+  }
+
+  getSelectedCacheTimeframes() {
+    return Array.from(document.querySelectorAll('.yahoo-cache-timeframe:checked'))
+      .map((input) => input.value)
+      .filter(Boolean);
+  }
+
+  setCacheBackfillState(inProgress) {
+    this.cacheBackfillInProgress = inProgress;
+    const button = document.getElementById('fill-yahoo-cache-btn');
+    const inputs = document.querySelectorAll('.yahoo-cache-timeframe');
+    inputs.forEach((input) => {
+      input.disabled = inProgress;
+    });
+
+    if (!button) return;
+    button.disabled = inProgress;
+    button.innerHTML = inProgress
+      ? '<i class="fas fa-spinner fa-spin mr-2"></i>Filling...'
+      : '<i class="fas fa-download mr-2"></i>Fill Data';
+  }
+
+  showCacheStatus(message, type = 'info') {
+    const statusEl = document.getElementById('yahoo-cache-status');
+    if (!statusEl) return;
+
+    statusEl.className = 'min-h-[42px] rounded-md border px-3 py-2 text-sm';
+    if (type === 'success') {
+      statusEl.classList.add('border-green-200', 'bg-green-50', 'text-green-800');
+    } else if (type === 'error') {
+      statusEl.classList.add('border-red-200', 'bg-red-50', 'text-red-800');
+    } else {
+      statusEl.classList.add('border-blue-200', 'bg-blue-50', 'text-blue-800');
+    }
+    statusEl.textContent = message;
+  }
+
+  async fillYahooCache() {
+    if (this.cacheBackfillInProgress) return;
+
+    const universeId = document.getElementById('swing-universe-select')?.value;
+    const timeframes = this.getSelectedCacheTimeframes();
+    if (!universeId) {
+      this.showError('Please select a ticker universe');
+      this.showCacheStatus('Select a ticker universe before filling Yahoo cache.', 'error');
+      return;
+    }
+    if (timeframes.length === 0) {
+      this.showError('Please select at least one timeframe');
+      this.showCacheStatus('Select at least one timeframe before filling Yahoo cache.', 'error');
+      return;
+    }
+
+    const universe = this.universes.find((item) => String(item.id) === String(universeId));
+    const tickerCount = Array.isArray(universe?.tickers) ? universe.tickers.length : 0;
+    const universeName = universe?.name || 'selected universe';
+
+    try {
+      this.setCacheBackfillState(true);
+      this.showCacheStatus(`Filling Yahoo cache for ${universeName}: ${tickerCount} tickers, ${timeframes.join(', ')}.`, 'info');
+      this.showLoading('Filling Yahoo cache...');
+
+      const response = await fetch('/api/swing/backfill-yahoo-cache', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticker_universe_id: parseInt(universeId, 10),
+          timeframes
+        })
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Yahoo cache fill failed');
+      }
+
+      const result = await response.json();
+      const errors = Array.isArray(result.errors) ? result.errors.length : 0;
+      const items = Array.isArray(result.items) ? result.items.length : 0;
+      const message = `Yahoo cache filled: ${result.total_candles || 0} candles across ${items} symbol/timeframe jobs${errors ? `, ${errors} errors` : ''}.`;
+      this.showCacheStatus(message, errors ? 'error' : 'success');
+      this.showMessage(message, errors ? 'error' : 'success');
+    } catch (error) {
+      const message = `Yahoo cache fill failed: ${error.message}`;
+      this.showCacheStatus(message, 'error');
+      this.showError(message);
+      console.error('Yahoo cache fill error:', error);
+    } finally {
+      this.hideLoading();
+      this.setCacheBackfillState(false);
     }
   }
 

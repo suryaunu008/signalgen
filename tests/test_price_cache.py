@@ -34,6 +34,18 @@ def _candle(day, close=None):
     }
 
 
+def _candle_at(timestamp, close=1.0, is_final=True):
+    return {
+        "timestamp": timestamp,
+        "open": close - 0.5,
+        "high": close + 1,
+        "low": close - 1,
+        "close": close,
+        "volume": 1000,
+        "is_final": is_final,
+    }
+
+
 def _repo(tmp_path):
     repo = SQLiteRepository(str(tmp_path / "cache.db"))
     repo.initialize_database()
@@ -56,7 +68,37 @@ def test_repository_upserts_and_reads_cached_candles(tmp_path):
     assert len(candles) == 2
     assert candles[0]["timestamp"] == datetime(2024, 1, 1)
     assert candles[0]["close"] == 42
+    assert candles[0]["is_final"] is True
     assert candles[1]["timestamp"] == datetime(2024, 1, 2)
+
+
+def test_repository_stores_non_final_candle_status(tmp_path):
+    repo = _repo(tmp_path)
+    repo.upsert_candles(
+        "AAPL",
+        "1h",
+        [_candle_at(datetime(2024, 1, 1, 10), close=10, is_final=False)],
+        data_source="yahoo",
+    )
+
+    candles = repo.get_cached_candles(
+        "AAPL",
+        "1h",
+        datetime(2024, 1, 1),
+        datetime(2024, 1, 2),
+        data_source="yahoo",
+    )
+    coverage = repo.get_price_cache_coverage(
+        "AAPL",
+        "1h",
+        datetime(2024, 1, 1),
+        datetime(2024, 1, 2),
+        data_source="yahoo",
+    )
+
+    assert candles[0]["is_final"] is False
+    assert coverage["last_final_timestamp"] is None
+    assert coverage["non_final_count"] == 1
 
 
 def test_cached_data_source_fetches_and_stores_on_cache_miss(tmp_path):
@@ -107,7 +149,36 @@ def test_cached_data_source_refreshes_partial_cache(tmp_path):
     ))
 
     assert len(wrapped.calls) == 1
+    assert wrapped.calls[0][1] == datetime(2024, 1, 2)
     assert [c["close"] for c in result] == [1, 2, 3]
+
+
+def test_cached_data_source_refreshes_from_non_final_candle(tmp_path):
+    repo = _repo(tmp_path)
+    repo.upsert_candles(
+        "AAPL",
+        "1h",
+        [
+            _candle_at(datetime(2024, 1, 1, 9), close=9, is_final=True),
+            _candle_at(datetime(2024, 1, 1, 10), close=10, is_final=False),
+        ],
+        data_source="yahoo",
+    )
+    wrapped = FakeDataSource([
+        _candle_at(datetime(2024, 1, 1, 10), close=11, is_final=True),
+        _candle_at(datetime(2024, 1, 1, 11), close=12, is_final=True),
+    ])
+    cached = CachedDataSource(wrapped, repo, data_source_name="yahoo")
+
+    result = asyncio.run(cached.fetch_historical_data(
+        "AAPL",
+        datetime(2024, 1, 1, 9),
+        datetime(2024, 1, 1, 12),
+        "1h",
+    ))
+
+    assert wrapped.calls[0][1] == datetime(2024, 1, 1, 10)
+    assert [c["close"] for c in result] == [9, 11, 12]
 
 
 def test_cached_data_source_reuses_recent_current_refresh_when_end_moves(tmp_path):

@@ -188,11 +188,17 @@ class SQLiteRepository:
                     low REAL NOT NULL,
                     close REAL NOT NULL,
                     volume INTEGER DEFAULT 0,
+                    is_final BOOLEAN DEFAULT TRUE,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     UNIQUE(data_source, symbol, timeframe, timestamp)
                 )
             ''')
+            cursor.execute("PRAGMA table_info(price_candles)")
+            price_candle_columns = [column[1] for column in cursor.fetchall()]
+            if 'is_final' not in price_candle_columns:
+                cursor.execute('ALTER TABLE price_candles ADD COLUMN is_final BOOLEAN DEFAULT TRUE')
+                self.logger.info("Added is_final column to price_candles table")
             
             # Create indexes for backtesting tables
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_backtest_runs_created_at ON backtest_runs(created_at)')
@@ -257,7 +263,7 @@ class SQLiteRepository:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT timestamp, open, high, low, close, volume
+                SELECT timestamp, open, high, low, close, volume, is_final
                 FROM price_candles
                 WHERE data_source = ?
                   AND symbol = ?
@@ -281,7 +287,8 @@ class SQLiteRepository:
                 'high': float(row['high']),
                 'low': float(row['low']),
                 'close': float(row['close']),
-                'volume': int(row['volume'] or 0)
+                'volume': int(row['volume'] or 0),
+                'is_final': bool(row['is_final'])
             }
             for row in rows
         ]
@@ -308,6 +315,8 @@ class SQLiteRepository:
                     COUNT(*) AS candle_count,
                     MIN(timestamp) AS first_timestamp,
                     MAX(timestamp) AS last_timestamp,
+                    MAX(CASE WHEN is_final THEN timestamp ELSE NULL END) AS last_final_timestamp,
+                    SUM(CASE WHEN is_final THEN 0 ELSE 1 END) AS non_final_count,
                     MAX(updated_at) AS last_updated_at
                 FROM price_candles
                 WHERE data_source = ?
@@ -329,6 +338,8 @@ class SQLiteRepository:
                 'candle_count': 0,
                 'first_timestamp': None,
                 'last_timestamp': None,
+                'last_final_timestamp': None,
+                'non_final_count': 0,
                 'last_updated_at': None,
             }
 
@@ -336,6 +347,12 @@ class SQLiteRepository:
             'candle_count': int(row['candle_count']),
             'first_timestamp': self._parse_candle_timestamp(row['first_timestamp']),
             'last_timestamp': self._parse_candle_timestamp(row['last_timestamp']),
+            'last_final_timestamp': (
+                self._parse_candle_timestamp(row['last_final_timestamp'])
+                if row['last_final_timestamp']
+                else None
+            ),
+            'non_final_count': int(row['non_final_count'] or 0),
             'last_updated_at': self._parse_candle_timestamp(row['last_updated_at']),
         }
 
@@ -367,6 +384,7 @@ class SQLiteRepository:
                 float(candle['low']),
                 float(candle['close']),
                 int(candle.get('volume', 0) or 0),
+                1 if candle.get('is_final', True) else 0,
                 now_iso,
                 now_iso
             ))
@@ -376,14 +394,15 @@ class SQLiteRepository:
                 cursor = conn.cursor()
                 cursor.executemany('''
                     INSERT INTO price_candles
-                    (data_source, symbol, timeframe, timestamp, open, high, low, close, volume, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (data_source, symbol, timeframe, timestamp, open, high, low, close, volume, is_final, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(data_source, symbol, timeframe, timestamp) DO UPDATE SET
                         open = excluded.open,
                         high = excluded.high,
                         low = excluded.low,
                         close = excluded.close,
                         volume = excluded.volume,
+                        is_final = excluded.is_final,
                         updated_at = excluded.updated_at
                 ''', rows)
                 conn.commit()
