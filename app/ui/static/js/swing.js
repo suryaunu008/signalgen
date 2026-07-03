@@ -81,6 +81,20 @@ class SwingTradingUI {
       cancelUniverseBtn.addEventListener('click', () => this.hideUniverseForm());
     }
 
+    const universeModalCloseBtn = document.getElementById('universe-modal-close-btn');
+    if (universeModalCloseBtn) {
+      universeModalCloseBtn.addEventListener('click', () => this.hideUniverseForm());
+    }
+
+    const universeFormContainer = document.getElementById('universe-form-container');
+    if (universeFormContainer) {
+      universeFormContainer.addEventListener('click', (event) => {
+        if (event.target === universeFormContainer) {
+          this.hideUniverseForm();
+        }
+      });
+    }
+
     const universeList = document.getElementById('universe-list');
     if (universeList) {
       universeList.addEventListener('click', (event) => {
@@ -125,6 +139,11 @@ class SwingTradingUI {
     }
 
     document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && !document.getElementById('universe-form-container')?.classList.contains('hidden')) {
+        this.hideUniverseForm();
+        return;
+      }
+
       if (!this.chartState || !['Delete', 'Backspace', 'Escape'].includes(event.key)) return;
       const target = event.target;
       if (target?.matches?.('input, textarea, select, [contenteditable="true"]')) return;
@@ -187,15 +206,22 @@ class SwingTradingUI {
   }
 
   displayUniverseSelector(universes) {
-    const universeSelect = document.getElementById('swing-universe-select');
-    if (!universeSelect) return;
+    ['swing-universe-select', 'yahoo-cache-universe-select'].forEach((selectId) => {
+      const universeSelect = document.getElementById(selectId);
+      if (!universeSelect) return;
 
-    universeSelect.innerHTML = '<option value="">Select ticker universe...</option>';
-    universes.forEach((universe) => {
-      const option = document.createElement('option');
-      option.value = universe.id;
-      option.textContent = `${universe.name} (${Array.isArray(universe.tickers) ? universe.tickers.length : 0} tickers)`;
-      universeSelect.appendChild(option);
+      const currentValue = universeSelect.value;
+      universeSelect.innerHTML = '<option value="">Select ticker universe...</option>';
+      universes.forEach((universe) => {
+        const option = document.createElement('option');
+        option.value = universe.id;
+        option.textContent = `${universe.name} (${Array.isArray(universe.tickers) ? universe.tickers.length : 0} tickers)`;
+        universeSelect.appendChild(option);
+      });
+
+      if (Array.from(universeSelect.options).some((option) => option.value === currentValue)) {
+        universeSelect.value = currentValue;
+      }
     });
   }
 
@@ -384,7 +410,7 @@ class SwingTradingUI {
   async fillYahooCache() {
     if (this.cacheBackfillInProgress) return;
 
-    const universeId = document.getElementById('swing-universe-select')?.value;
+    const universeId = document.getElementById('yahoo-cache-universe-select')?.value;
     const timeframes = this.getSelectedCacheTimeframes();
     if (!universeId) {
       this.showError('Please select a ticker universe');
@@ -648,15 +674,6 @@ class SwingTradingUI {
     tableHeader.appendChild(tableTitle);
     tableHeader.appendChild(filterBar);
     tableCard.appendChild(tableHeader);
-
-    const exportWrap = document.createElement('div');
-    exportWrap.className = 'mb-4';
-    const exportBtn = document.createElement('button');
-    exportBtn.className = 'px-3 py-1 bg-sky-600 text-white rounded text-sm hover:bg-sky-700';
-    exportBtn.textContent = 'Export CSV';
-    exportBtn.addEventListener('click', () => this.exportResultsCsv());
-    exportWrap.appendChild(exportBtn);
-    tableCard.appendChild(exportWrap);
 
     const overflow = document.createElement('div');
     overflow.className = 'overflow-x-auto';
@@ -1766,6 +1783,8 @@ class SwingTradingUI {
       document.getElementById('universe-tickers').value = '';
       document.getElementById('universe-description').value = '';
       formContainer.classList.remove('hidden');
+      document.body.classList.add('overflow-hidden');
+      document.getElementById('universe-name')?.focus();
     }
   }
 
@@ -1781,6 +1800,8 @@ class SwingTradingUI {
       document.getElementById('universe-tickers').value = (universe.tickers || []).join(', ');
       document.getElementById('universe-description').value = universe.description || '';
       formContainer.classList.remove('hidden');
+      document.body.classList.add('overflow-hidden');
+      document.getElementById('universe-name')?.focus();
     }
   }
 
@@ -1857,6 +1878,7 @@ class SwingTradingUI {
     const formContainer = document.getElementById('universe-form-container');
     if (formContainer) {
       formContainer.classList.add('hidden');
+      document.body.classList.remove('overflow-hidden');
     }
   }
 

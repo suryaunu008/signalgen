@@ -30,9 +30,6 @@ class BacktestingUI {
     const runButton = document.getElementById('run-backtest-btn');
     if (runButton) runButton.addEventListener('click', () => this.runBacktesting());
 
-    const exportButton = document.getElementById('export-backtest-csv-btn');
-    if (exportButton) exportButton.addEventListener('click', () => this.exportCsv());
-
     const modeSelect = document.getElementById('backtest-mode');
     if (modeSelect) modeSelect.addEventListener('change', (e) => this.onModeChange(e.target.value));
   }

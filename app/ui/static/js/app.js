@@ -5,9 +5,320 @@
  * and manages the application state. It serves as the main controller for the frontend.
  */
 
-// Global tab switching function
-function switchTab(tabName) {
-  console.log(`Switching to tab: ${tabName}`);
+const VIEW_ALIASES = {
+  realtime: "scalping",
+  screener: "swing",
+};
+
+let currentView = "scalping";
+let helpLanguage = "en";
+
+const VIEW_HELP = {
+  en: {
+    scalping: {
+      title: "Realtime Signal",
+      subtitle: "Use this page to run live monitoring and review incoming signals.",
+      sections: [
+        {
+          heading: "What to do",
+          items: [
+            "Choose a watchlist, trading rule, and timeframe.",
+            "Click Start Engine to begin live monitoring.",
+            "Review latest prices, live signals, and connection status on this page."
+          ]
+        },
+        {
+          heading: "Good to know",
+          items: [
+            "Only symbols in the selected watchlist are monitored.",
+            "Stop the engine before changing to a different live setup."
+          ]
+        }
+      ]
+    },
+    swing: {
+      title: "Screener",
+      subtitle: "Use this page to scan a group of tickers for matching signals.",
+      sections: [
+        {
+          heading: "What to do",
+          items: [
+            "Choose a ticker universe and screening rule.",
+            "Set timeframe, lookback, or date range.",
+            "Click Run Screening, then open charts from the result rows when needed."
+          ]
+        },
+        {
+          heading: "Good to know",
+          items: [
+            "Ticker universe and cached Yahoo data are managed in Data.",
+            "Screening uses the universe selected on this page."
+          ]
+        }
+      ]
+    },
+    data: {
+      title: "Data",
+      subtitle: "Use this page to prepare ticker lists and market data for screening.",
+      sections: [
+        {
+          heading: "Ticker Universes",
+          items: [
+            "Create a universe to group tickers you want to screen.",
+            "Edit a universe to update its name, ticker list, or description.",
+            "Delete unused universes to keep the list tidy."
+          ]
+        },
+        {
+          heading: "Yahoo Cache",
+          items: [
+            "Choose a universe and the timeframes you want to prepare.",
+            "Click Fill Yahoo Cache before screening larger ticker lists.",
+            "Use the status panel to see whether the data fill completed."
+          ]
+        }
+      ]
+    },
+    backtesting: {
+      title: "Backtesting",
+      subtitle: "Use this page to test how a rule or manual entries performed in the past.",
+      sections: [
+        {
+          heading: "Rule mode",
+          items: [
+            "Choose a rule, timeframe, price basis, and testing period.",
+            "Click Run Backtesting to review historical results."
+          ]
+        },
+        {
+          heading: "Manual mode",
+          items: [
+            "Enter specific trades in the format shown in the input field.",
+            "Use this mode when you want to test selected entries instead of a rule."
+          ]
+        }
+      ]
+    },
+    rules: {
+      title: "Rules",
+      subtitle: "Use this page to create and manage trading rules.",
+      sections: [
+        {
+          heading: "What to do",
+          items: [
+            "Enter a rule name and choose the signal type.",
+            "Add one or more conditions.",
+            "Check the preview, then click Save Rule."
+          ]
+        },
+        {
+          heading: "Good to know",
+          items: [
+            "Saved rules can be used in Realtime Signal, Screener, and Backtesting.",
+            "Use View Details to review an existing rule before using or deleting it."
+          ]
+        }
+      ]
+    },
+    settings: {
+      title: "Settings",
+      subtitle: "Use this page to manage broker and notification preferences.",
+      sections: [
+        {
+          heading: "Broker",
+          items: [
+            "Enter the broker connection details used by your local trading app.",
+            "Save the settings before using broker-related features."
+          ]
+        },
+        {
+          heading: "Telegram",
+          items: [
+            "Enter Telegram notification details if you want signal alerts.",
+            "Send a test message to confirm notifications are working."
+          ]
+        }
+      ]
+    }
+  },
+  id: {
+    scalping: {
+      title: "Realtime Signal",
+      subtitle: "Gunakan halaman ini untuk monitoring live dan melihat sinyal masuk.",
+      sections: [
+        {
+          heading: "Yang dilakukan",
+          items: [
+            "Pilih watchlist, rule trading, dan timeframe.",
+            "Klik Start Engine untuk mulai monitoring live.",
+            "Pantau harga terbaru, sinyal live, dan status koneksi di halaman ini."
+          ]
+        },
+        {
+          heading: "Perlu diketahui",
+          items: [
+            "Hanya symbol dalam watchlist terpilih yang dimonitor.",
+            "Stop engine sebelum mengganti setup live."
+          ]
+        }
+      ]
+    },
+    swing: {
+      title: "Screener",
+      subtitle: "Gunakan halaman ini untuk mencari signal dari kumpulan ticker.",
+      sections: [
+        {
+          heading: "Yang dilakukan",
+          items: [
+            "Pilih ticker universe dan rule screening.",
+            "Atur timeframe, lookback, atau rentang tanggal.",
+            "Klik Run Screening, lalu buka chart dari baris hasil bila perlu."
+          ]
+        },
+        {
+          heading: "Perlu diketahui",
+          items: [
+            "Ticker universe dan Yahoo cache dikelola di menu Data.",
+            "Screening memakai universe yang dipilih di halaman ini."
+          ]
+        }
+      ]
+    },
+    data: {
+      title: "Data",
+      subtitle: "Gunakan halaman ini untuk menyiapkan daftar ticker dan data market.",
+      sections: [
+        {
+          heading: "Ticker Universes",
+          items: [
+            "Buat universe untuk mengelompokkan ticker yang ingin di-screen.",
+            "Edit universe untuk mengubah nama, daftar ticker, atau deskripsi.",
+            "Hapus universe yang tidak dipakai agar daftar tetap rapi."
+          ]
+        },
+        {
+          heading: "Yahoo Cache",
+          items: [
+            "Pilih universe dan timeframe yang ingin disiapkan.",
+            "Klik Fill Yahoo Cache sebelum screening daftar ticker besar.",
+            "Lihat panel status untuk memastikan proses selesai."
+          ]
+        }
+      ]
+    },
+    backtesting: {
+      title: "Backtesting",
+      subtitle: "Gunakan halaman ini untuk menguji rule atau entry manual pada data historis.",
+      sections: [
+        {
+          heading: "Mode rule",
+          items: [
+            "Pilih rule, timeframe, price basis, dan periode test.",
+            "Klik Run Backtesting untuk melihat hasil historis."
+          ]
+        },
+        {
+          heading: "Mode manual",
+          items: [
+            "Masukkan trade spesifik sesuai format di input.",
+            "Gunakan mode ini untuk test entry tertentu tanpa rule."
+          ]
+        }
+      ]
+    },
+    rules: {
+      title: "Rules",
+      subtitle: "Gunakan halaman ini untuk membuat dan mengelola rule trading.",
+      sections: [
+        {
+          heading: "Yang dilakukan",
+          items: [
+            "Isi nama rule dan pilih signal type.",
+            "Tambahkan satu atau beberapa condition.",
+            "Cek preview, lalu klik Save Rule."
+          ]
+        },
+        {
+          heading: "Perlu diketahui",
+          items: [
+            "Rule tersimpan bisa dipakai di Realtime Signal, Screener, dan Backtesting.",
+            "Gunakan View Details untuk meninjau rule sebelum dipakai atau dihapus."
+          ]
+        }
+      ]
+    },
+    settings: {
+      title: "Settings",
+      subtitle: "Gunakan halaman ini untuk mengatur broker dan notifikasi.",
+      sections: [
+        {
+          heading: "Broker",
+          items: [
+            "Isi detail koneksi broker yang digunakan aplikasi trading lokal.",
+            "Simpan setting sebelum memakai fitur yang terhubung ke broker."
+          ]
+        },
+        {
+          heading: "Telegram",
+          items: [
+            "Isi detail Telegram jika ingin menerima alert sinyal.",
+            "Kirim test message untuk memastikan notifikasi berjalan."
+          ]
+        }
+      ]
+    }
+  }
+};
+
+function renderHelpSections(sections) {
+  return sections.map((section) => `
+    <div>
+      <h4 class="text-sm font-semibold text-gray-900 mb-2">${section.heading}</h4>
+      <ul class="list-disc pl-5 space-y-1">
+        ${section.items.map((item) => `<li>${item}</li>`).join("")}
+      </ul>
+    </div>
+  `).join("");
+}
+
+function openViewHelp() {
+  const help = VIEW_HELP[helpLanguage]?.[currentView] || VIEW_HELP.en.scalping;
+  const modal = document.getElementById("view-help-modal");
+  const title = document.getElementById("view-help-title");
+  const subtitle = document.getElementById("view-help-subtitle");
+  const content = document.getElementById("view-help-content");
+  const languageSelect = document.getElementById("view-help-language");
+
+  if (!modal || !title || !subtitle || !content) return;
+
+  title.textContent = help.title;
+  subtitle.textContent = help.subtitle;
+  content.innerHTML = renderHelpSections(help.sections);
+  if (languageSelect) {
+    languageSelect.value = helpLanguage;
+  }
+  modal.classList.remove("hidden");
+  document.body.classList.add("overflow-hidden");
+}
+
+function refreshViewHelp() {
+  const modal = document.getElementById("view-help-modal");
+  if (modal && !modal.classList.contains("hidden")) {
+    openViewHelp();
+  }
+}
+
+function closeViewHelp() {
+  document.getElementById("view-help-modal")?.classList.add("hidden");
+  document.body.classList.remove("overflow-hidden");
+}
+
+// Global view switching function
+function switchView(viewName) {
+  const tabName = VIEW_ALIASES[viewName] || viewName;
+  console.log(`Switching to view: ${tabName}`);
+  currentView = tabName;
+  refreshViewHelp();
   
   // Hide all tab contents
   const tabContents = document.querySelectorAll('.tab-content');
@@ -27,18 +338,26 @@ function switchTab(tabName) {
     selectedContent.classList.add('active');
   }
   
-  // Add active class to selected tab button
+  // Add active class to selected tab buttons
   const selectedButton = document.getElementById(`tab-btn-${tabName}`);
   if (selectedButton) {
     selectedButton.classList.add('active');
   }
+  document.querySelectorAll(`.tab-button[data-view="${tabName}"]`).forEach((button) => {
+    button.classList.add('active');
+  });
   
-  // Initialize tab-specific UI if needed
+  // Initialize view-specific UI if needed
   if (tabName === 'backtesting' && typeof backtestingUI !== 'undefined') {
     backtestingUI.init();
-  } else if (tabName === 'swing' && typeof swingTradingUI !== 'undefined') {
+  } else if ((tabName === 'swing' || tabName === 'data') && typeof swingTradingUI !== 'undefined') {
     swingTradingUI.init();
   }
+}
+
+// Backward-compatible wrapper for older callers.
+function switchTab(tabName) {
+  switchView(tabName);
 }
 
 class SignalGenApp {
@@ -341,6 +660,34 @@ class SignalGenApp {
    * Setup DOM event listeners
    */
   setupEventListeners() {
+    const closeViewHelpButton = document.getElementById("close-view-help-modal");
+    if (closeViewHelpButton) {
+      closeViewHelpButton.addEventListener("click", closeViewHelp);
+    }
+
+    const viewHelpLanguage = document.getElementById("view-help-language");
+    if (viewHelpLanguage) {
+      viewHelpLanguage.addEventListener("change", (event) => {
+        helpLanguage = event.target.value === "id" ? "id" : "en";
+        refreshViewHelp();
+      });
+    }
+
+    const viewHelpModal = document.getElementById("view-help-modal");
+    if (viewHelpModal) {
+      viewHelpModal.addEventListener("click", (event) => {
+        if (event.target === viewHelpModal) {
+          closeViewHelp();
+        }
+      });
+    }
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        closeViewHelp();
+      }
+    });
+
     // Engine controls
     document
       .getElementById("start-engine")
@@ -913,12 +1260,21 @@ class SignalGenApp {
    * Populate rule select dropdown
    */
   populateRuleSelect(rules) {
-    const select = document.getElementById("rule-select");
-    select.innerHTML =
-      '<option value="">Select rule...</option>' +
-      rules
-        .map((rule) => `<option value="${rule.id}">${rule.name}</option>`)
-        .join("");
+    ["rule-select", "backtest-rule-select", "swing-rule-select"].forEach((selectId) => {
+      const select = document.getElementById(selectId);
+      if (!select) return;
+
+      const currentValue = select.value;
+      select.innerHTML =
+        '<option value="">Select rule...</option>' +
+        rules
+          .map((rule) => `<option value="${rule.id}">${this.escapeHtml(rule.name)}</option>`)
+          .join("");
+
+      if (Array.from(select.options).some((option) => option.value === currentValue)) {
+        select.value = currentValue;
+      }
+    });
   }
 
   /**
