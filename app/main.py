@@ -32,6 +32,7 @@ Typical Usage:
 
 import asyncio
 import logging
+import os
 import sys
 import threading
 import webview
@@ -256,7 +257,10 @@ def main() -> None:
         logger.info("All components started, running application")
         
         # Run the webview (this blocks until window is closed)
-        webview.start(debug=True)
+        webview_debug = not getattr(sys, 'frozen', False)
+        if os.getenv("SIGNALGEN_WEBVIEW_DEBUG", "").lower() in {"1", "true", "yes"}:
+            webview_debug = True
+        webview.start(debug=webview_debug)
         
         logger.info("Application shutdown initiated")
         
