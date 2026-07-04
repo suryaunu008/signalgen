@@ -25,7 +25,7 @@
   <body class="bg-slate-100 text-slate-800">
     <div class="min-h-screen lg:flex">
       <aside
-        class="hidden lg:flex lg:w-64 lg:flex-col bg-slate-950 text-slate-200 border-r border-slate-800"
+        class="hidden lg:flex lg:w-64 lg:flex-col lg:sticky lg:top-0 lg:h-screen lg:self-start bg-slate-950 text-slate-200 border-r border-slate-800"
       >
         <div class="px-5 py-5 border-b border-slate-800">
           <div class="flex items-center gap-3">
@@ -1259,98 +1259,6 @@
 
               <!-- Screening Results -->
               <div id="swing-results-container"></div>
-
-              <div
-                id="swing-chart-modal"
-                class="fixed inset-0 bg-black bg-opacity-50 hidden z-50 flex items-center justify-center p-4"
-              >
-                <div
-                  class="bg-white rounded-lg shadow-xl w-full max-w-6xl max-h-[92vh] overflow-hidden flex flex-col"
-                >
-                  <div
-                    class="flex items-center justify-between px-5 py-4 border-b border-gray-200"
-                  >
-                    <div>
-                      <h3
-                        id="swing-chart-title"
-                        class="text-lg font-semibold text-gray-900"
-                      >
-                        Chart
-                      </h3>
-                      <p
-                        id="swing-chart-subtitle"
-                        class="text-sm text-gray-500"
-                      ></p>
-                    </div>
-                    <button
-                      id="close-swing-chart-modal"
-                      class="w-9 h-9 rounded-md bg-gray-100 hover:bg-gray-200 text-gray-700"
-                      title="Close chart"
-                    >
-                      <i class="fas fa-times"></i>
-                    </button>
-                  </div>
-                  <div
-                    class="px-5 py-3 border-b border-gray-200 flex flex-wrap items-center justify-between gap-3"
-                  >
-                    <div
-                      id="swing-chart-toggles"
-                      class="flex flex-wrap items-center gap-2"
-                    ></div>
-                    <div class="flex items-center gap-2">
-                      <button
-                        id="swing-chart-rule-toggle"
-                        class="h-9 px-3 rounded-md border border-gray-300 hover:bg-gray-50 text-gray-700 text-sm inline-flex items-center gap-2"
-                        title="Show rule used for this chart"
-                      >
-                        <i class="fas fa-list"></i>
-                        <span>Rule</span>
-                      </button>
-                      <button
-                        id="swing-chart-ruler-toggle"
-                        class="h-9 px-3 rounded-md border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 text-sm inline-flex items-center gap-2"
-                        title="Measure price and time change"
-                      >
-                        <i class="fas fa-ruler-combined"></i>
-                        <span>Ruler</span>
-                      </button>
-                      <button
-                        id="swing-chart-range-minus"
-                        class="w-9 h-9 rounded-md border border-gray-300 hover:bg-gray-50 text-gray-700"
-                        title="Show fewer candles"
-                      >
-                        <i class="fas fa-minus"></i>
-                      </button>
-                      <span
-                        id="swing-chart-range-label"
-                        class="text-sm text-gray-600 min-w-[120px] text-center"
-                      ></span>
-                      <button
-                        id="swing-chart-range-plus"
-                        class="w-9 h-9 rounded-md border border-gray-300 hover:bg-gray-50 text-gray-700"
-                        title="Show more candles"
-                      >
-                        <i class="fas fa-plus"></i>
-                      </button>
-                    </div>
-                  </div>
-                  <div
-                    id="swing-chart-error"
-                    class="hidden mx-5 mt-4 p-3 rounded-md bg-red-50 text-red-800 text-sm"
-                  ></div>
-                  <div class="p-5 overflow-y-auto">
-                    <div
-                      id="swing-chart-rule-panel"
-                      class="hidden mb-4 rounded-md border border-gray-200 bg-gray-50 p-4"
-                    ></div>
-                    <div
-                      id="swing-chart-main"
-                      class="w-full h-[430px] border border-gray-200 rounded-md"
-                    ></div>
-                    <div id="swing-chart-panels" class="mt-4 space-y-4"></div>
-                  </div>
-                </div>
-              </div>
             </div>
           </div>
           <!-- END TAB: Screener -->
@@ -1599,6 +1507,99 @@
           </div>
           <!-- END TAB: Data -->
         </main>
+      </div>
+    </div>
+
+    <!-- Swing Chart Modal -->
+    <div
+      id="swing-chart-modal"
+      class="fixed inset-0 bg-black bg-opacity-50 hidden z-50 flex items-center justify-center p-4"
+    >
+      <div
+        class="bg-white rounded-lg shadow-xl w-full max-w-6xl max-h-[92vh] overflow-hidden flex flex-col"
+      >
+        <div
+          class="flex items-center justify-between px-5 py-4 border-b border-gray-200"
+        >
+          <div>
+            <h3
+              id="swing-chart-title"
+              class="text-lg font-semibold text-gray-900"
+            >
+              Chart
+            </h3>
+            <p
+              id="swing-chart-subtitle"
+              class="text-sm text-gray-500"
+            ></p>
+          </div>
+          <button
+            id="close-swing-chart-modal"
+            class="w-9 h-9 rounded-md bg-gray-100 hover:bg-gray-200 text-gray-700"
+            title="Close chart"
+          >
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+        <div
+          class="px-5 py-3 border-b border-gray-200 flex flex-wrap items-center justify-between gap-3"
+        >
+          <div
+            id="swing-chart-toggles"
+            class="flex flex-wrap items-center gap-2"
+          ></div>
+          <div class="flex items-center gap-2">
+            <button
+              id="swing-chart-rule-toggle"
+              class="h-9 px-3 rounded-md border border-gray-300 hover:bg-gray-50 text-gray-700 text-sm inline-flex items-center gap-2"
+              title="Show rule used for this chart"
+            >
+              <i class="fas fa-list"></i>
+              <span>Rule</span>
+            </button>
+            <button
+              id="swing-chart-ruler-toggle"
+              class="h-9 px-3 rounded-md border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 text-sm inline-flex items-center gap-2"
+              title="Measure price and time change"
+            >
+              <i class="fas fa-ruler-combined"></i>
+              <span>Ruler</span>
+            </button>
+            <button
+              id="swing-chart-range-minus"
+              class="w-9 h-9 rounded-md border border-gray-300 hover:bg-gray-50 text-gray-700"
+              title="Show fewer candles"
+            >
+              <i class="fas fa-minus"></i>
+            </button>
+            <span
+              id="swing-chart-range-label"
+              class="text-sm text-gray-600 min-w-[120px] text-center"
+            ></span>
+            <button
+              id="swing-chart-range-plus"
+              class="w-9 h-9 rounded-md border border-gray-300 hover:bg-gray-50 text-gray-700"
+              title="Show more candles"
+            >
+              <i class="fas fa-plus"></i>
+            </button>
+          </div>
+        </div>
+        <div
+          id="swing-chart-error"
+          class="hidden mx-5 mt-4 p-3 rounded-md bg-red-50 text-red-800 text-sm"
+        ></div>
+        <div class="p-5 overflow-y-auto">
+          <div
+            id="swing-chart-rule-panel"
+            class="hidden mb-4 rounded-md border border-gray-200 bg-gray-50 p-4"
+          ></div>
+          <div
+            id="swing-chart-main"
+            class="w-full h-[430px] border border-gray-200 rounded-md"
+          ></div>
+          <div id="swing-chart-panels" class="mt-4 space-y-4"></div>
+        </div>
       </div>
     </div>
 
