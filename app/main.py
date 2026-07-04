@@ -35,6 +35,7 @@ import logging
 import os
 import sys
 import threading
+import webbrowser
 import webview
 from typing import Optional
 import uvicorn
@@ -226,6 +227,23 @@ def create_pywebview_window(url: str = "http://127.0.0.1:3456", title: str = "Si
         logger.error(f"Error creating PyWebView window: {e}")
         raise
 
+def run_browser_fallback(url: str = "http://127.0.0.1:3456") -> None:
+    """Open the local app in the user's browser when PyWebView cannot start."""
+    logger = logging.getLogger(__name__)
+
+    logger.error(
+        "PyWebView failed to start. Install Microsoft Edge WebView2 Runtime "
+        "and Microsoft .NET Framework 4.8, or use the browser fallback."
+    )
+    logger.info(f"Opening browser fallback at {url}")
+    webbrowser.open(url)
+
+    try:
+        while True:
+            threading.Event().wait(3600)
+    except KeyboardInterrupt:
+        logger.info("Browser fallback interrupted by user")
+
 def main() -> None:
     """Main application entry point."""
     logger = logging.getLogger(__name__)
@@ -252,7 +270,8 @@ def main() -> None:
         time.sleep(2)
         
         # Create PyWebView window
-        window = create_pywebview_window()
+        app_url = "http://127.0.0.1:3456"
+        window = create_pywebview_window(app_url)
         
         logger.info("All components started, running application")
         
@@ -260,7 +279,11 @@ def main() -> None:
         webview_debug = not getattr(sys, 'frozen', False)
         if os.getenv("SIGNALGEN_WEBVIEW_DEBUG", "").lower() in {"1", "true", "yes"}:
             webview_debug = True
-        webview.start(debug=webview_debug)
+        try:
+            webview.start(debug=webview_debug)
+        except Exception as webview_error:
+            logger.error(f"PyWebView startup failed: {webview_error}", exc_info=True)
+            run_browser_fallback(app_url)
         
         logger.info("Application shutdown initiated")
         

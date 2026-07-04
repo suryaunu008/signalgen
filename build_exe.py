@@ -9,6 +9,13 @@ import sys
 import shutil
 
 
+REQUIRED_DIST_FILES = [
+    os.path.join('dist', 'SignalGen', '_internal', 'pythonnet', 'runtime', 'Python.Runtime.dll'),
+    os.path.join('dist', 'SignalGen', '_internal', 'pythonnet', 'runtime', 'Python.Runtime.deps.json'),
+    os.path.join('dist', 'SignalGen', '_internal', 'clr_loader', 'ffi', 'dlls', 'amd64', 'ClrLoader.dll'),
+]
+
+
 def clean_build_folders():
     """Remove old build artifacts"""
     folders_to_clean = ['build', 'dist']
@@ -17,6 +24,20 @@ def clean_build_folders():
             print(f"Cleaning {folder}/ directory...")
             shutil.rmtree(folder)
             print(f"[OK] {folder}/ removed")
+
+
+def validate_dist_files():
+    """Ensure runtime files needed by PyWebView/pythonnet are bundled."""
+    missing_files = [path for path in REQUIRED_DIST_FILES if not os.path.exists(path)]
+
+    if missing_files:
+        print("\nERROR: Build completed but required runtime files are missing:")
+        for path in missing_files:
+            print(f"  - {path}")
+        print("\nPyWebView may fail on another PC without these files.")
+        sys.exit(1)
+
+    print("[OK] Python.NET runtime files bundled")
 
 
 def build_exe():
@@ -40,6 +61,7 @@ def build_exe():
 
     try:
         subprocess.run(cmd, check=True)
+        validate_dist_files()
 
         print("\n" + "=" * 60)
         print("BUILD SUCCESSFUL!")
