@@ -79,7 +79,8 @@ class SocketIOBroadcaster:
             'watchlists': 'watchlists',
             'ibkr': 'ibkr_status',
             'errors': 'errors',
-            'prices': 'prices'
+            'prices': 'prices',
+            'logs': 'app_logs'
         }
         
         # Event loop reference for thread-safe broadcasting
@@ -370,6 +371,39 @@ class SocketIOBroadcaster:
         except Exception as e:
             self.logger.error(f"Error in sync price broadcast: {e}")
     
+    async def broadcast_log_entry(self, line: str) -> None:
+        """
+        Broadcast a single formatted log line to clients viewing the logs modal.
+
+        Args:
+            line: Pre-formatted log line (as produced by the logging Formatter)
+        """
+        try:
+            if not self.connected_clients:
+                return
+            await self.sio.emit('log_entry', {'line': line}, room=self.ROOMS['logs'])
+        except Exception:
+            # Deliberately silent: this is invoked from the logging pipeline
+            # itself, so logging the failure here risks re-entrant recursion.
+            pass
+
+    def broadcast_log_entry_sync(self, line: str) -> None:
+        """
+        Thread-safe fire-and-forget broadcast of a log line.
+
+        Called directly from InMemoryLogHandler.emit(), which may run on any
+        thread (engine threads, the asyncio loop thread, etc.), so this must
+        never block and must never raise.
+
+        Args:
+            line: Pre-formatted log line
+        """
+        try:
+            if self._loop and self._loop.is_running():
+                asyncio.run_coroutine_threadsafe(self.broadcast_log_entry(line), self._loop)
+        except Exception:
+            pass
+
     async def broadcast_engine_status(self, status: Dict[str, Any]) -> None:
         """
         Broadcast engine status updates to all connected clients.

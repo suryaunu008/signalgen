@@ -68,6 +68,7 @@ class WebSocketClient {
     this.socket.on("room_joined", (data) => {
       console.log("DEBUG: Successfully joined room:", data.room);
     });
+    this.socket.on("log_entry", (data) => this.handleEvent("log_entry", data));
     this.socket.on("error", (data) => this.handleEvent("error", data));
   }
 
@@ -98,7 +99,8 @@ class WebSocketClient {
     this.socket.emit("join_room", { room: "prices" });
     this.socket.emit("join_room", { room: "engine_status" });
     this.socket.emit("join_room", { room: "signals" });
-    console.log("DEBUG: Joined prices, engine_status, and signals rooms");
+    this.socket.emit("join_room", { room: "app_logs" });
+    console.log("DEBUG: Joined prices, engine_status, signals, and app_logs rooms");
   }
 
   /**

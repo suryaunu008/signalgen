@@ -198,6 +198,11 @@ class ApiClient {
   async changeTimeframe(timeframe) {
     return this.put("/api/timeframe", { value: timeframe });
   }
+
+  // Logs API
+  async getLogs(lines = 1000) {
+    return this.get("/api/logs", { lines });
+  }
 }
 
 // Create global API client instance

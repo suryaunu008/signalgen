@@ -313,6 +313,60 @@ function closeViewHelp() {
   document.body.classList.remove("overflow-hidden");
 }
 
+const MAX_LOG_LINES_IN_VIEW = 5000;
+
+async function refreshLogs() {
+  const content = document.getElementById("logs-content");
+  const subtitle = document.getElementById("logs-modal-subtitle");
+  if (!content) return;
+
+  try {
+    const result = await API.getLogs(MAX_LOG_LINES_IN_VIEW);
+    content.textContent = result.content || "(no logs captured yet)";
+    if (subtitle) {
+      subtitle.textContent = "Live — streaming since application start";
+    }
+    content.scrollTop = content.scrollHeight;
+  } catch (error) {
+    content.textContent = `Failed to load logs: ${error.message}`;
+  }
+}
+
+function isLogsModalOpen() {
+  const modal = document.getElementById("logs-modal");
+  return !!modal && !modal.classList.contains("hidden");
+}
+
+function appendLogLine(line) {
+  if (!isLogsModalOpen() || typeof line !== "string") return;
+  const content = document.getElementById("logs-content");
+  if (!content) return;
+
+  const lines = content.textContent.split("\n");
+  lines.push(line);
+  if (lines.length > MAX_LOG_LINES_IN_VIEW) {
+    lines.splice(0, lines.length - MAX_LOG_LINES_IN_VIEW);
+  }
+  content.textContent = lines.join("\n");
+
+  // Always snap to the newest entry so the viewer never has to scroll manually.
+  content.scrollTop = content.scrollHeight;
+}
+
+function openLogsModal() {
+  const modal = document.getElementById("logs-modal");
+  if (!modal) return;
+
+  modal.classList.remove("hidden");
+  document.body.classList.add("overflow-hidden");
+  refreshLogs();
+}
+
+function closeLogsModal() {
+  document.getElementById("logs-modal")?.classList.add("hidden");
+  document.body.classList.remove("overflow-hidden");
+}
+
 // Global view switching function
 function switchView(viewName) {
   const tabName = VIEW_ALIASES[viewName] || viewName;
@@ -685,8 +739,23 @@ class SignalGenApp {
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         closeViewHelp();
+        closeLogsModal();
       }
     });
+
+    const closeLogsButton = document.getElementById("close-logs-modal");
+    if (closeLogsButton) {
+      closeLogsButton.addEventListener("click", closeLogsModal);
+    }
+
+    const logsModal = document.getElementById("logs-modal");
+    if (logsModal) {
+      logsModal.addEventListener("click", (event) => {
+        if (event.target === logsModal) {
+          closeLogsModal();
+        }
+      });
+    }
 
     // Engine controls
     document
@@ -838,6 +907,10 @@ class SignalGenApp {
 
     WS.on("error", (error) => {
       this.showToast(error.message || "An error occurred", "error");
+    });
+
+    WS.on("log_entry", (data) => {
+      appendLogLine(data?.line);
     });
   }
 

@@ -34,7 +34,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, status, Request
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, status, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -43,6 +43,7 @@ from pydantic import BaseModel, Field, validator
 from pathlib import Path
 
 from .storage.sqlite_repo import SQLiteRepository
+from .logging_utils import log_handler
 from .ws.broadcaster import SocketIOBroadcaster
 from .engines.scalping_engine import ScalpingEngine
 from .core.rule_engine import RuleEngine, RuleValidationError
@@ -2492,7 +2493,23 @@ class SignalGenApp:
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Internal server error"
                 )
-    
+
+        @self.app.get("/api/logs")
+        def get_logs(lines: int = Query(2000, ge=1, le=5000)):
+            """Return buffered application log lines captured since this process started."""
+            try:
+                content = log_handler.get_buffer_text(lines)
+                return {
+                    "content": content,
+                    "line_count": len(log_handler.buffer)
+                }
+            except Exception as e:
+                self.logger.error(f"Error reading log buffer: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error"
+                )
+
     def _start_engine_in_thread(self, symbols: List[str], rule_id: int) -> None:
         """
         Start engine in separate thread with its own event loop.
