@@ -639,8 +639,41 @@ class SQLiteRepository:
             ''')
 ```
 
-Kode di atas menunjukkan implementasi fungsi `initialize_database()` yang membuat tabel-tabel basis data jika belum ada. Tabel `rules` menyimpan aturan *trading* dengan definisi dalam format JSON, tabel `watchlists` menyimpan daftar *watchlist* dengan status aktif. Penggunaan *lock* (`threading.Lock()`) memastikan bahwa operasi basis data aman terhadap kondisi *race condition* dalam lingkungan multi-*thread*. Modul ini juga menggunakan manajer konteks untuk koneksi basis data (`with self._get_connection()`) yang memastikan koneksi selalu ditutup dengan benar setelah operasi selesai, mencegah *resource leak*.
+Kode di atas menunjukkan implementasi fungsi `initialize_database()` yang membuat tabel-tabel basis data jika belum ada. Tabel `rules` menyimpan aturan *trading* dengan definisi dalam format JSON, tabel `watchlists` menyimpan daftar *watchlist* dengan status aktif. Modul ini juga menggunakan manajer konteks untuk koneksi basis data (`with self._get_connection()`) yang memastikan koneksi selalu ditutup dengan benar setelah operasi selesai, mencegah *resource leak*.
+
+Selain tabel-tabel konfigurasi tersebut, modul *Storage* juga menyediakan tabel `price_candles` yang berfungsi sebagai *cache* data historis OHLCV (*Open, High, Low, Close, Volume*) hasil pengambilan dari *Yahoo Finance*. Tabel ini menjadi dasar mekanisme unduh-dan-simpan (*fetch-and-cache*) yang dipakai bersama oleh proses *swing screening* dan *backtesting*, sehingga data historis yang sama tidak perlu diunduh berulang kali dari penyedia data eksternal.
+
+```python
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS price_candles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        data_source TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        timeframe TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        open REAL NOT NULL,
+        high REAL NOT NULL,
+        low REAL NOT NULL,
+        close REAL NOT NULL,
+        volume INTEGER DEFAULT 0,
+        is_final BOOLEAN DEFAULT TRUE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(data_source, symbol, timeframe, timestamp)
+    )
+''')
+```
+
+Mekanisme pengisian *cache* ini ditangani oleh kelas `CachedDataSource`, yang membungkus `YahooDataSource` dan disisipkan di antara mesin analisis (*Screener*/*Backtesting engine*) dengan penyedia data eksternal. Alur kerjanya adalah sebagai berikut:
+
+1. Saat suatu simbol dan rentang tanggal diminta, `CachedDataSource` lebih dulu memeriksa tabel `price_candles` melalui `get_cached_candles()` dan `get_price_cache_coverage()` untuk mengetahui apakah rentang data yang diminta sudah tersedia secara lengkap di basis data lokal.
+2. Jika cakupan data sudah lengkap (*cache hit*), data dikembalikan langsung dari SQLite tanpa memanggil *Yahoo Finance* sama sekali, sehingga proses *screening*/*backtesting* berjalan lebih cepat.
+3. Jika data belum ada atau baru tersedia sebagian (*cache miss*/*refresh*), sistem menghitung melalui `_refresh_range()` rentang yang benar-benar perlu diunduh ulang — hanya bagian yang belum tercakup (misalnya *candle* terbaru setelah *candle* terakhir yang tersimpan) yang diminta ke `YahooDataSource`, bukan seluruh rentang tanggal.
+4. Permintaan tersebut diteruskan ke `YahooDataSource.fetch_historical_data()`, yang mengambil data melalui *library* `yfinance`. Untuk *timeframe* `1m`, permintaan dipecah menjadi beberapa *chunk* 7 hari agar tidak melampaui batas panjang *request Yahoo Finance*; *timeframe* lain dikirim dalam satu kali panggilan. *Yahoo Finance* sendiri membatasi rentang data intraday yang dapat diakses (sekitar 30 hari untuk `1m`, 60 hari untuk `5m`/`15m`, dan 730 hari untuk `1h`/`4h`), sehingga tanggal awal permintaan otomatis disesuaikan (*clamped*) apabila melampaui batas retensi tersebut.
+5. Setiap *candle* hasil unduhan ditandai `is_final` berdasarkan apakah periodenya sudah benar-benar tertutup pada saat pengunduhan, lalu disimpan ke tabel `price_candles` melalui `upsert_candles()`, yang memakai klausa `INSERT ... ON CONFLICT ... DO UPDATE` agar data yang sudah ada diperbarui, bukan digandakan.
+
+Proses ini juga dapat dipicu manual oleh pengguna melalui menu "Data" pada antarmuka aplikasi: pengguna memilih satu *ticker universe* beserta *timeframe* yang ingin diisi, lalu sistem menjalankan `backfill_symbols()` untuk seluruh kombinasi simbol dan *timeframe* tersebut hingga batas maksimum data yang tersedia di *Yahoo Finance*.
 
 ---
 
-Dengan implementasi seluruh modul di atas, sistem *trading signal generator* dapat beroperasi secara terintegrasi, mulai dari antarmuka pengguna hingga pemrosesan data dan penyimpanan hasil. Setiap modul dirancang untuk memiliki tanggung jawab yang jelas dan berkomunikasi dengan modul lain melalui antarmuka yang terdefinisi dengan baik.
+Dengan implementasi seluruh modul di atas, sistem *trading signal generator* dapat beroperasi secara terintegrasi, mulai dari antarmuka pengguna hingga pemrosesan data dan penyimpanan hasil. Setiap modul dirancang untuk memiliki tanggung jawab yang jelas dan berkomunikasi dengan modul lain melalui antarmuka yang terdefinisi dengan baik. Mekanisme *caching* pada tabel `price_candles` secara khusus mendukung efisiensi proses *swing screening* dan *backtesting* dengan meminimalkan jumlah permintaan berulang ke *Yahoo Finance*, sekaligus menjaga hasil analisis tetap konsisten karena dievaluasi dari data OHLCV yang sama antar proses.
