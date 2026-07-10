@@ -162,7 +162,21 @@ class SQLiteRepository:
                     FOREIGN KEY (backtest_run_id) REFERENCES backtest_runs(id) ON DELETE CASCADE
                 )
             ''')
-            
+
+            # Create backtest_screen_runs table (records /api/backtest/screen runs for reproducibility)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS backtest_screen_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    timeframe TEXT NOT NULL,
+                    exit_strategy TEXT NOT NULL,
+                    row_count INTEGER DEFAULT 0,
+                    config TEXT NOT NULL,
+                    summary TEXT
+                )
+            ''')
+
             # Create ticker_universes table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS ticker_universes (
@@ -1190,10 +1204,10 @@ class SQLiteRepository:
     def delete_backtest_run(self, run_id: int) -> bool:
         """
         Delete a backtest run and its signals.
-        
+
         Args:
             run_id: Backtest run ID
-        
+
         Returns:
             bool: True if deletion successful
         """
@@ -1202,6 +1216,70 @@ class SQLiteRepository:
             cursor.execute('DELETE FROM backtest_runs WHERE id = ?', (run_id,))
             conn.commit()
             return cursor.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Backtest screen runs (item #3 - reproducibility of /api/backtest/screen)
+    # ------------------------------------------------------------------
+    def create_backtest_screen_run(
+        self,
+        mode: str,
+        timeframe: str,
+        exit_strategy: str,
+        row_count: int,
+        config: Dict,
+        summary: Optional[Dict] = None
+    ) -> int:
+        """Persist a backtest screen run's full config + summary metrics.
+
+        Storing the exact request config makes the run reproducible (re-running
+        with the same config against the same cached data yields the same result).
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO backtest_screen_runs
+                (created_at, mode, timeframe, exit_strategy, row_count, config, summary)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                datetime.now().isoformat(),
+                mode,
+                timeframe,
+                exit_strategy,
+                int(row_count),
+                json.dumps(config),
+                json.dumps(summary) if summary is not None else None
+            ))
+            conn.commit()
+            return cursor.lastrowid
+
+    def get_backtest_screen_runs(self, limit: int = 50) -> List[Dict]:
+        """Return recent backtest screen runs (newest first), config/summary parsed."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM backtest_screen_runs ORDER BY created_at DESC LIMIT ?',
+                (int(limit),)
+            )
+            runs = []
+            for row in cursor.fetchall():
+                run = dict(row)
+                run['config'] = json.loads(run['config']) if run['config'] else {}
+                run['summary'] = json.loads(run['summary']) if run['summary'] else {}
+                runs.append(run)
+            return runs
+
+    def get_backtest_screen_run(self, run_id: int) -> Optional[Dict]:
+        """Return a single backtest screen run by ID with config/summary parsed."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM backtest_screen_runs WHERE id = ?', (run_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            run = dict(row)
+            run['config'] = json.loads(run['config']) if run['config'] else {}
+            run['summary'] = json.loads(run['summary']) if run['summary'] else {}
+            return run
     
     # Ticker Universe operations
     def create_ticker_universe(

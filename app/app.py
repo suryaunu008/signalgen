@@ -36,7 +36,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, status, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, validator
@@ -171,12 +171,23 @@ class BacktestScreenRequest(BaseModel):
     data_source: str = Field(..., pattern='^(ibkr|yahoo)$')
     entry_price_basis: str = Field(default='close', pattern='^(open|high|low|close)$')
     exit_price_basis: str = Field(default='close', pattern='^(open|high|low|close)$')
-    pl_basis: Optional[str] = Field(default=None, pattern='^(open|high|low|close)$')
+    pl_basis: Optional[str] = Field(default=None, pattern='^(open|high|low|close)$')  # deprecated alias of exit_price_basis
     rule_id: Optional[int] = Field(None, gt=0)
     start_at: Optional[str] = Field(None)  # ISO datetime string
     end_at: Optional[str] = Field(None)    # ISO datetime string
     symbols: Optional[List[str]] = Field(None, max_items=200)
     manual_entries: Optional[List[ManualBacktestEntry]] = Field(None, max_items=2000)
+    # --- Capital & position sizing (item #1) ---
+    initial_capital: float = Field(default=10000.0, gt=0)
+    position_sizing: str = Field(default='percent_equity', pattern='^(percent_equity|fixed_amount)$')
+    position_size: float = Field(default=100.0, gt=0)  # percent (1-100) when percent_equity, else currency amount
+    commission_pct: float = Field(default=0.0, ge=0, le=10)   # percent per side
+    slippage_pct: float = Field(default=0.0, ge=0, le=10)     # percent per side
+    # --- Exit strategy (item #6) ---
+    exit_strategy: str = Field(default='holding_period', pattern='^(holding_period|target_stop|exit_signal)$')
+    exit_rule_id: Optional[int] = Field(None, gt=0)          # required for exit_signal
+    take_profit_pct: Optional[float] = Field(None, gt=0, le=1000)   # for target_stop
+    stop_loss_pct: Optional[float] = Field(None, gt=0, le=100)      # for target_stop
 
 class SwingScreenRequest(BaseModel):
     """Model for swing screening request."""
@@ -1398,58 +1409,190 @@ class SignalGenApp:
                         "worst_pl_pct": None,
                         "avg_win": 0,
                         "avg_loss": 0,
-                        "profit_factor": None
+                        "profit_factor": None,
+                        # Capital-based metrics (item #1/#2)
+                        "initial_capital": 0,
+                        "final_equity": 0,
+                        "net_pl_cash": 0,
+                        "total_return_pct": 0,
+                        "max_drawdown_pct": 0,
+                        "avg_win_cash": 0,
+                        "avg_loss_cash": 0,
+                        "risk_reward": None,
+                        "expectancy_cash": 0,
+                        "sharpe": None,
+                        "total_commission": 0,
+                        "equity_curve": []
                     }
 
                 exit_price_basis = request.pl_basis or request.exit_price_basis or 'close'
                 entry_price_basis = request.entry_price_basis or 'close'
 
+                capital_cfg = {
+                    "initial_capital": float(request.initial_capital),
+                    "position_sizing": request.position_sizing,
+                    "position_size": float(request.position_size),
+                    "commission_pct": float(request.commission_pct),
+                    "slippage_pct": float(request.slippage_pct),
+                }
+
+                def _simulate_horizon(rows: List[Dict[str, Any]], label: str) -> Dict[str, Any]:
+                    """
+                    Simulate a single-position, sequential portfolio for one exit horizon.
+
+                    Assumptions (documented for thesis validity):
+                    - One position at a time; trades are processed in entry-time order and
+                      equity compounds trade-by-trade (no overlapping positions).
+                    - Commission and slippage are applied to both legs (entry + exit).
+                    - Sharpe is a per-trade ratio (mean/stdev of per-trade returns), not annualized.
+                    """
+                    initial_capital = capital_cfg["initial_capital"]
+                    comm = capital_cfg["commission_pct"] / 100.0
+                    slip = capital_cfg["slippage_pct"] / 100.0
+
+                    # Order trades that have an exit at this horizon by entry time
+                    ordered = []
+                    for row in rows:
+                        step_data = row.get("steps", {}).get(label)
+                        if not step_data or step_data.get("exit_price") is None:
+                            continue
+                        ordered.append(row)
+                    ordered.sort(key=lambda r: str(r.get("entry_time") or ""))
+
+                    equity = initial_capital
+                    peak = initial_capital
+                    max_dd = 0.0
+                    net_pls = []
+                    trade_returns = []
+                    total_commission = 0.0
+                    equity_curve = [{"t": None, "equity": round(equity, 4), "label": "start"}]
+
+                    for row in ordered:
+                        step_data = row["steps"][label]
+                        sign = -1 if str(row.get("signal_type", "BUY")).upper() == "SELL" else 1
+                        entry = float(row["entry_price"])
+                        exit_price = float(step_data["exit_price"])
+                        if entry <= 0:
+                            continue
+
+                        # Slippage worsens both fills relative to trade direction
+                        eff_entry = entry * (1 + sign * slip)
+                        eff_exit = exit_price * (1 - sign * slip)
+                        if eff_entry <= 0:
+                            continue
+
+                        # Position sizing
+                        if capital_cfg["position_sizing"] == "fixed_amount":
+                            notional = min(capital_cfg["position_size"], equity)
+                        else:  # percent_equity
+                            notional = equity * (capital_cfg["position_size"] / 100.0)
+                        if notional <= 0:
+                            continue
+
+                        shares = notional / eff_entry
+                        gross = (eff_exit - eff_entry) * sign * shares
+                        commission = (notional + shares * eff_exit) * comm
+                        net = gross - commission
+                        total_commission += commission
+
+                        equity += net
+                        peak = max(peak, equity)
+                        if peak > 0:
+                            dd = (peak - equity) / peak
+                            max_dd = max(max_dd, dd)
+
+                        net_pls.append(net)
+                        trade_returns.append(net / notional if notional else 0.0)
+                        equity_curve.append({
+                            "t": step_data.get("time") or row.get("entry_time"),
+                            "equity": round(equity, 4),
+                            "symbol": row.get("symbol"),
+                            "pl": round(net, 4),
+                        })
+
+                    n = len(net_pls)
+                    wins = [p for p in net_pls if p > 0]
+                    losses = [p for p in net_pls if p < 0]
+                    gross_profit = sum(wins)
+                    gross_loss = abs(sum(losses))
+                    avg_win_cash = (gross_profit / len(wins)) if wins else 0.0
+                    avg_loss_cash = (sum(losses) / len(losses)) if losses else 0.0  # negative
+                    expectancy = (sum(net_pls) / n) if n else 0.0
+
+                    # Per-trade Sharpe (not annualized)
+                    sharpe = None
+                    if n >= 2:
+                        mean_r = sum(trade_returns) / n
+                        var = sum((r - mean_r) ** 2 for r in trade_returns) / (n - 1)
+                        std = var ** 0.5
+                        sharpe = (mean_r / std) if std > 0 else None
+
+                    risk_reward = (avg_win_cash / abs(avg_loss_cash)) if avg_loss_cash != 0 else None
+
+                    return {
+                        "initial_capital": round(initial_capital, 2),
+                        "final_equity": round(equity, 2),
+                        "net_pl_cash": round(equity - initial_capital, 2),
+                        "total_return_pct": ((equity - initial_capital) / initial_capital * 100) if initial_capital else 0,
+                        "max_drawdown_pct": round(max_dd * 100, 2),
+                        "avg_win_cash": round(avg_win_cash, 2),
+                        "avg_loss_cash": round(avg_loss_cash, 2),
+                        "risk_reward": round(risk_reward, 2) if risk_reward is not None else None,
+                        "expectancy_cash": round(expectancy, 2),
+                        "sharpe": round(sharpe, 3) if sharpe is not None else None,
+                        "total_commission": round(total_commission, 2),
+                        "equity_curve": equity_curve,
+                    }
+
+                def _aggregate_label(rows: List[Dict[str, Any]], label: str, step_num: int) -> Dict[str, Any]:
+                    """Aggregate price-based + capital-based metrics for one exit label
+                    (either a T+k horizon or the realized-exit pseudo-label)."""
+                    values = []
+                    missing = 0
+                    for row in rows:
+                        step_data = row.get("steps", {}).get(label)
+                        if not step_data or step_data.get("pl") is None:
+                            missing += 1
+                            continue
+                        values.append(step_data)
+
+                    metrics = _empty_step_metrics(step_num)
+                    metrics["label"] = label
+                    metrics["missing"] = missing
+                    if values:
+                        pls = [float(v["pl"]) for v in values]
+                        pl_pcts = [float(v["pl_pct"]) for v in values]
+                        wins = [v for v in pls if v > 0]
+                        losses = [v for v in pls if v < 0]
+                        flats = [v for v in pls if v == 0]
+                        gross_profit = sum(wins)
+                        gross_loss = abs(sum(losses))
+
+                        metrics.update({
+                            "evaluated": len(values),
+                            "wins": len(wins),
+                            "losses": len(losses),
+                            "flats": len(flats),
+                            "win_rate": (len(wins) / len(values)) * 100,
+                            "total_pl": sum(pls),
+                            "avg_pl": sum(pls) / len(pls),
+                            "total_pl_pct": sum(pl_pcts),
+                            "avg_pl_pct": sum(pl_pcts) / len(pl_pcts),
+                            "best_pl": max(pls),
+                            "worst_pl": min(pls),
+                            "best_pl_pct": max(pl_pcts),
+                            "worst_pl_pct": min(pl_pcts),
+                            "avg_win": (sum(wins) / len(wins)) if wins else 0,
+                            "avg_loss": (sum(losses) / len(losses)) if losses else 0,
+                            "profit_factor": (gross_profit / gross_loss) if gross_loss > 0 else (None if gross_profit == 0 else gross_profit)
+                        })
+                    # Merge capital-based simulation (equity curve, drawdown, return%, expectancy, sharpe)
+                    metrics.update(_simulate_horizon(rows, label))
+                    return metrics
+
                 def _calculate_metrics(rows: List[Dict[str, Any]], n_steps: int, exit_basis: str) -> Dict[str, Any]:
-                    per_step = []
+                    per_step = [_aggregate_label(rows, f"T+{step}", step) for step in range(1, n_steps + 1)]
                     by_symbol: Dict[str, Dict[str, Any]] = {}
-
-                    for step in range(1, n_steps + 1):
-                        values = []
-                        missing = 0
-                        label = f"T+{step}"
-
-                        for row in rows:
-                            step_data = row.get("steps", {}).get(label)
-                            if not step_data or step_data.get("pl") is None:
-                                missing += 1
-                                continue
-                            values.append(step_data)
-
-                        metrics = _empty_step_metrics(step)
-                        metrics["missing"] = missing
-                        if values:
-                            pls = [float(v["pl"]) for v in values]
-                            pl_pcts = [float(v["pl_pct"]) for v in values]
-                            wins = [v for v in pls if v > 0]
-                            losses = [v for v in pls if v < 0]
-                            flats = [v for v in pls if v == 0]
-                            gross_profit = sum(wins)
-                            gross_loss = abs(sum(losses))
-
-                            metrics.update({
-                                "evaluated": len(values),
-                                "wins": len(wins),
-                                "losses": len(losses),
-                                "flats": len(flats),
-                                "win_rate": (len(wins) / len(values)) * 100,
-                                "total_pl": sum(pls),
-                                "avg_pl": sum(pls) / len(pls),
-                                "total_pl_pct": sum(pl_pcts),
-                                "avg_pl_pct": sum(pl_pcts) / len(pl_pcts),
-                                "best_pl": max(pls),
-                                "worst_pl": min(pls),
-                                "best_pl_pct": max(pl_pcts),
-                                "worst_pl_pct": min(pl_pcts),
-                                "avg_win": (sum(wins) / len(wins)) if wins else 0,
-                                "avg_loss": (sum(losses) / len(losses)) if losses else 0,
-                                "profit_factor": (gross_profit / gross_loss) if gross_loss > 0 else (None if gross_profit == 0 else gross_profit)
-                            })
-                        per_step.append(metrics)
 
                     final_label = f"T+{n_steps}"
                     for row in rows:
@@ -1492,6 +1635,7 @@ class SignalGenApp:
                         "exit_price_basis": exit_basis,
                         "final_horizon": final_label,
                         "total_entries": len(rows),
+                        "capital": capital_cfg,
                         "final": final_step_metrics,
                         "per_step": per_step,
                         "by_symbol": sorted(by_symbol.values(), key=lambda item: item["total_pl"], reverse=True)
@@ -1631,6 +1775,126 @@ class SignalGenApp:
                             "source": "manual"
                         })
 
+                # --- Exit strategy setup (item #6) ---
+                exit_strategy = request.exit_strategy
+                exit_rule_to_evaluate = None
+                exit_required_operands: set = set()
+                exit_rule_engine = None
+                if exit_strategy == 'exit_signal':
+                    if not request.exit_rule_id:
+                        raise ValueError("exit_rule_id is required when exit_strategy is 'exit_signal'")
+                    exit_rule = self.repository.get_rule(request.exit_rule_id)
+                    if not exit_rule:
+                        raise ValueError(f"Exit rule with ID {request.exit_rule_id} not found")
+                    exit_rule_to_evaluate = {**exit_rule, **exit_rule['definition']}
+                    exit_required_operands = _required_rule_operands(exit_rule_to_evaluate)
+                    exit_rule_engine = RuleEngine()
+                elif exit_strategy == 'target_stop':
+                    if request.take_profit_pct is None and request.stop_loss_pct is None:
+                        raise ValueError("target_stop requires take_profit_pct and/or stop_loss_pct")
+
+                def _make_realized(c: Dict[str, Any], step: int, exit_price: float, reason: str,
+                                   entry_price: float, signal_type: str) -> Dict[str, Any]:
+                    trade_pl = _calculate_trade_pl(signal_type, float(entry_price), float(exit_price))
+                    return {
+                        "time": _wall_clock_iso(c['timestamp']) if isinstance(c['timestamp'], datetime) else str(c['timestamp']),
+                        "step": step,
+                        "open": float(c['open']),
+                        "high": float(c['high']),
+                        "low": float(c['low']),
+                        "close": float(c['close']),
+                        "exit_price": float(exit_price),
+                        "exit_reason": reason,
+                        "basis": exit_price_basis,
+                        "basis_price": float(exit_price),
+                        "pl": trade_pl["pl"],
+                        "pl_pct": trade_pl["pl_pct"],
+                    }
+
+                def _time_exit(candles: List[Dict[str, Any]], idx: int, cap: int,
+                               entry_price: float, signal_type: str) -> Optional[Dict[str, Any]]:
+                    ci = min(idx + cap, len(candles) - 1)
+                    if ci <= idx:
+                        return None
+                    c = candles[ci]
+                    return _make_realized(c, ci - idx, _basis_price(c, exit_price_basis), 'time_exit',
+                                          entry_price, signal_type)
+
+                def _realized_target_stop(candles: List[Dict[str, Any]], idx: int,
+                                          entry_price: float, signal_type: str) -> Optional[Dict[str, Any]]:
+                    sign = -1 if signal_type == 'SELL' else 1
+                    tp = request.take_profit_pct
+                    sl = request.stop_loss_pct
+                    cap = request.n_steps
+                    for step in range(1, cap + 1):
+                        ci = idx + step
+                        if ci >= len(candles):
+                            break
+                        c = candles[ci]
+                        high = float(c['high'])
+                        low = float(c['low'])
+                        if sign == 1:  # long
+                            sl_price = entry_price * (1 - sl / 100) if sl else None
+                            tp_price = entry_price * (1 + tp / 100) if tp else None
+                            hit_sl = sl_price is not None and low <= sl_price
+                            hit_tp = tp_price is not None and high >= tp_price
+                        else:  # short
+                            sl_price = entry_price * (1 + sl / 100) if sl else None
+                            tp_price = entry_price * (1 - tp / 100) if tp else None
+                            hit_sl = sl_price is not None and high >= sl_price
+                            hit_tp = tp_price is not None and low <= tp_price
+                        # Conservative: if both touched in the same candle, assume stop first
+                        if hit_sl:
+                            return _make_realized(c, step, sl_price, 'stop_loss', entry_price, signal_type)
+                        if hit_tp:
+                            return _make_realized(c, step, tp_price, 'take_profit', entry_price, signal_type)
+                    return _time_exit(candles, idx, cap, entry_price, signal_type)
+
+                async def _realized_exit_signal(symbol: str, entry_time: datetime, idx_time: datetime,
+                                                entry_price: float, signal_type: str) -> Optional[Dict[str, Any]]:
+                    # Fetch a warmup-prefixed window so exit-rule indicators are valid
+                    warmup_start = _rule_warmup_start(entry_time, exit_rule_to_evaluate, request.timeframe)
+                    lookahead_days = 365 if request.timeframe in ('1d',) else 90
+                    wcandles = await _fetch_candles(
+                        symbol,
+                        warmup_start,
+                        entry_time.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=lookahead_days)
+                    )
+                    if not wcandles:
+                        return None
+                    ie = IndicatorEngine(timeframe=request.timeframe)
+                    ie.set_required_operands(exit_rule_to_evaluate)
+                    entry_idx = None
+                    steps_after = 0
+                    for j, c in enumerate(wcandles):
+                        cts = _normalize_dt(c['timestamp'])
+                        ts_unix = cts.timestamp() if isinstance(cts, datetime) else float(cts)
+                        completed = ie.update_candle_data(
+                            symbol=symbol, open_price=c['open'], high=c['high'], low=c['low'],
+                            close=c['close'], timestamp=ts_unix, volume=c.get('volume', 0),
+                            suppress_warnings=True
+                        )
+                        if entry_idx is None:
+                            if cts >= entry_time:
+                                entry_idx = j
+                            continue
+                        # candles strictly after entry
+                        steps_after += 1
+                        if steps_after > request.n_steps:
+                            break
+                        if not completed or not ie.is_symbol_ready(symbol):
+                            continue
+                        indicators = ie.get_indicators(symbol)
+                        if not indicators or not _has_required_indicators(indicators, exit_required_operands):
+                            continue
+                        if exit_rule_engine.evaluate(exit_rule_to_evaluate, indicators):
+                            return _make_realized(c, steps_after, _basis_price(c, exit_price_basis),
+                                                  'exit_signal', entry_price, signal_type)
+                    # No exit signal within cap -> force time exit at cap using the same warmup window
+                    if entry_idx is not None:
+                        return _time_exit(wcandles, entry_idx, request.n_steps, entry_price, signal_type)
+                    return None
+
                 # Enrich entries with T+1 ... T+n OHLC
                 rows = []
                 for entry in entries:
@@ -1685,6 +1949,17 @@ class SignalGenApp:
                             "pl_pct": trade_pl["pl_pct"]
                         }
 
+                    # Realized exit (item #6): resolve the single actual exit per chosen strategy
+                    if exit_strategy == 'target_stop':
+                        realized = _realized_target_stop(candles, idx, float(entry_price), signal_type)
+                    elif exit_strategy == 'exit_signal':
+                        realized = await _realized_exit_signal(symbol, entry_time, entry_time,
+                                                               float(entry_price), signal_type)
+                    else:  # holding_period
+                        realized = _time_exit(candles, idx, request.n_steps, float(entry_price), signal_type)
+                    if realized is not None:
+                        step_values["REALIZED"] = realized
+
                     rows.append({
                         "symbol": symbol,
                         "signal_type": signal_type,
@@ -1696,6 +1971,48 @@ class SignalGenApp:
                     })
 
                 metrics = _calculate_metrics(rows, request.n_steps, exit_price_basis)
+                # Realized-exit aggregate (used as headline when exit_strategy != holding_period)
+                metrics["realized"] = _aggregate_label(rows, "REALIZED", request.n_steps)
+                metrics["exit_strategy"] = exit_strategy
+
+                # Persist run for reproducibility (item #3). Best-effort; never blocks the response.
+                try:
+                    def _lean(step: Dict[str, Any]) -> Dict[str, Any]:
+                        return {k: v for k, v in step.items() if k != "equity_curve"}
+
+                    screen_config = {
+                        "mode": request.mode,
+                        "timeframe": request.timeframe,
+                        "n_steps": request.n_steps,
+                        "data_source": request.data_source,
+                        "entry_price_basis": entry_price_basis,
+                        "exit_price_basis": exit_price_basis,
+                        "rule_id": request.rule_id,
+                        "start_at": request.start_at,
+                        "end_at": request.end_at,
+                        "symbols": symbols if request.mode == "rule" else None,
+                        "capital": capital_cfg,
+                        "exit_strategy": exit_strategy,
+                        "exit_rule_id": request.exit_rule_id,
+                        "take_profit_pct": request.take_profit_pct,
+                        "stop_loss_pct": request.stop_loss_pct,
+                    }
+                    screen_summary = {
+                        "total_entries": metrics.get("total_entries"),
+                        "final": _lean(metrics.get("final", {})),
+                        "realized": _lean(metrics.get("realized", {})),
+                        "per_step": [_lean(s) for s in metrics.get("per_step", [])],
+                    }
+                    self.repository.create_backtest_screen_run(
+                        mode=request.mode,
+                        timeframe=request.timeframe,
+                        exit_strategy=exit_strategy,
+                        row_count=len(rows),
+                        config=screen_config,
+                        summary=screen_summary,
+                    )
+                except Exception as persist_err:
+                    self.logger.warning(f"Failed to persist backtest screen run: {persist_err}")
 
                 return {
                     "mode": request.mode,
@@ -1704,6 +2021,13 @@ class SignalGenApp:
                     "entry_price_basis": entry_price_basis,
                     "exit_price_basis": exit_price_basis,
                     "pl_basis": exit_price_basis,
+                    "capital": capital_cfg,
+                    "exit_strategy": exit_strategy,
+                    "exit_config": {
+                        "exit_rule_id": request.exit_rule_id,
+                        "take_profit_pct": request.take_profit_pct,
+                        "stop_loss_pct": request.stop_loss_pct,
+                    },
                     "row_count": len(rows),
                     "metrics": metrics,
                     "rows": rows
@@ -1720,7 +2044,54 @@ class SignalGenApp:
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail=f"Backtest screen failed: {str(e)}"
                 )
-        
+
+        @self.app.get("/api/backtest/screen/runs")
+        async def list_backtest_screen_runs(limit: int = 50):
+            """List recent backtest screen runs (config + summary) for reproducibility."""
+            try:
+                return self.repository.get_backtest_screen_runs(limit=max(1, min(limit, 200)))
+            except Exception as e:
+                self.logger.error(f"Error listing backtest screen runs: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error"
+                )
+
+        @self.app.get("/api/backtest/screen/runs/{run_id}")
+        async def get_backtest_screen_run(run_id: int):
+            """Fetch a single persisted backtest screen run by ID."""
+            run = self.repository.get_backtest_screen_run(run_id)
+            if not run:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Backtest screen run {run_id} not found"
+                )
+            return run
+
+        @self.app.post("/api/backtest/export-csv")
+        async def export_backtest_csv(request: Request):
+            """Return client-supplied CSV as a file download.
+
+            Triggered via a form POST so the WebView2/PyWebView runtime saves the
+            file through its native download manager (blob/`download`-attribute
+            downloads are unreliable inside the embedded webview).
+            """
+            from urllib.parse import parse_qs
+            import re as _re
+
+            raw = (await request.body()).decode("utf-8", errors="replace")
+            fields = parse_qs(raw, keep_blank_values=True)
+            csv_text = (fields.get("csv") or [""])[0]
+            filename = (fields.get("filename") or ["backtest.csv"])[0]
+            safe = _re.sub(r'[^A-Za-z0-9._-]', '_', filename)[:80] or "backtest.csv"
+            if not safe.lower().endswith(".csv"):
+                safe += ".csv"
+            return Response(
+                content=csv_text,
+                media_type="text/csv; charset=utf-8",
+                headers={"Content-Disposition": f'attachment; filename="{safe}"'}
+            )
+
         @self.app.post("/api/backtest/run")
         async def run_backtest(request: BacktestRequest):
             """

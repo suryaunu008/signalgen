@@ -3,6 +3,7 @@ class BacktestingUI {
     this.currentResults = null;
     this.entryPriceBasis = 'close';
     this.exitPriceBasis = 'close';
+    this.focusLabel = 'REALIZED';
     this.currentPage = 1;
     this.pageSize = 25;
     this.initialized = false;
@@ -17,6 +18,8 @@ class BacktestingUI {
     this.renderTimezoneLabel();
     await this.loadRules();
     this.onModeChange(document.getElementById('backtest-mode')?.value || 'rule');
+    this.onExitStrategyChange(document.getElementById('backtest-exit-strategy')?.value || 'holding_period');
+    this.onPositionSizingChange(document.getElementById('backtest-position-sizing')?.value || 'percent_equity');
   }
 
   renderTimezoneLabel() {
@@ -32,6 +35,12 @@ class BacktestingUI {
 
     const modeSelect = document.getElementById('backtest-mode');
     if (modeSelect) modeSelect.addEventListener('change', (e) => this.onModeChange(e.target.value));
+
+    const exitStrategy = document.getElementById('backtest-exit-strategy');
+    if (exitStrategy) exitStrategy.addEventListener('change', (e) => this.onExitStrategyChange(e.target.value));
+
+    const sizing = document.getElementById('backtest-position-sizing');
+    if (sizing) sizing.addEventListener('change', (e) => this.onPositionSizingChange(e.target.value));
   }
 
   onModeChange(mode) {
@@ -49,19 +58,65 @@ class BacktestingUI {
     ruleFields.classList.remove('hidden');
   }
 
+  onExitStrategyChange(strategy) {
+    const tp = document.getElementById('backtest-tp-field');
+    const sl = document.getElementById('backtest-sl-field');
+    const rule = document.getElementById('backtest-exit-rule-field');
+    const hint = document.getElementById('backtest-exit-strategy-hint');
+    const show = (el, on) => el && el.classList.toggle('hidden', !on);
+
+    show(tp, strategy === 'target_stop');
+    show(sl, strategy === 'target_stop');
+    show(rule, strategy === 'exit_signal');
+
+    if (hint) {
+      if (strategy === 'target_stop') {
+        hint.textContent = 'Take Profit / Stop Loss: each position is closed at the first candle that touches your TP or SL level (SL checked first if both hit). Falls back to a time exit at Max Holding.';
+      } else if (strategy === 'exit_signal') {
+        hint.textContent = 'Exit Signal: each position is closed at the first candle after entry where the chosen exit rule fires, capped at Max Holding candles.';
+      } else {
+        hint.textContent = 'Holding Period: every entry is exited after N candles; the result table compares all T+1..T+N horizons.';
+      }
+    }
+  }
+
+  onPositionSizingChange(sizing) {
+    const label = document.getElementById('backtest-position-size-label');
+    const input = document.getElementById('backtest-position-size');
+    if (!label || !input) return;
+    if (sizing === 'fixed_amount') {
+      label.textContent = 'Size (amount/trade)';
+      input.value = input.value === '100' ? '1000' : input.value;
+    } else {
+      label.textContent = 'Size (% equity)';
+      input.value = input.value === '1000' ? '100' : input.value;
+    }
+  }
+
   async loadRules() {
     try {
       const response = await fetch('/api/rules');
       const rules = await response.json();
       const select = document.getElementById('backtest-rule-select');
-      if (!select || !Array.isArray(rules)) return;
+      const exitSelect = document.getElementById('backtest-exit-rule-select');
+      if (!Array.isArray(rules)) return;
 
-      select.innerHTML = '<option value="">Select rule...</option>';
+      if (select) select.innerHTML = '<option value="">Select rule...</option>';
+      if (exitSelect) exitSelect.innerHTML = '<option value="">Select exit rule...</option>';
       rules.forEach((rule) => {
-        const option = document.createElement('option');
-        option.value = rule.id;
-        option.textContent = `${rule.name}${rule.is_system ? ' (System)' : ''}`;
-        select.appendChild(option);
+        const label = `${rule.name}${rule.is_system ? ' (System)' : ''}`;
+        if (select) {
+          const option = document.createElement('option');
+          option.value = rule.id;
+          option.textContent = label;
+          select.appendChild(option);
+        }
+        if (exitSelect) {
+          const opt = document.createElement('option');
+          opt.value = rule.id;
+          opt.textContent = label;
+          exitSelect.appendChild(opt);
+        }
       });
     } catch (error) {
       this.showError('Failed to load rules');
@@ -159,8 +214,39 @@ class BacktestingUI {
         n_steps: nSteps,
         data_source: dataSource,
         entry_price_basis: entryPriceBasis,
-        exit_price_basis: exitPriceBasis
+        exit_price_basis: exitPriceBasis,
+        initial_capital: Number(document.getElementById('backtest-initial-capital')?.value || 10000),
+        position_sizing: document.getElementById('backtest-position-sizing')?.value || 'percent_equity',
+        position_size: Number(document.getElementById('backtest-position-size')?.value || 100),
+        commission_pct: Number(document.getElementById('backtest-commission-pct')?.value || 0),
+        slippage_pct: Number(document.getElementById('backtest-slippage-pct')?.value || 0)
       };
+
+      if (!(payload.initial_capital > 0) || !(payload.position_size > 0)) {
+        this.showError('Initial capital and position size must be greater than 0');
+        return;
+      }
+
+      // Exit strategy
+      const exitStrategy = document.getElementById('backtest-exit-strategy')?.value || 'holding_period';
+      payload.exit_strategy = exitStrategy;
+      if (exitStrategy === 'target_stop') {
+        const tp = document.getElementById('backtest-take-profit')?.value;
+        const sl = document.getElementById('backtest-stop-loss')?.value;
+        if ((!tp || tp === '') && (!sl || sl === '')) {
+          this.showError('Take Profit / Stop Loss requires at least one of TP% or SL%');
+          return;
+        }
+        if (tp) payload.take_profit_pct = Number(tp);
+        if (sl) payload.stop_loss_pct = Number(sl);
+      } else if (exitStrategy === 'exit_signal') {
+        const exitRuleId = document.getElementById('backtest-exit-rule-select')?.value;
+        if (!exitRuleId) {
+          this.showError('Exit Signal strategy requires an exit rule');
+          return;
+        }
+        payload.exit_rule_id = parseInt(exitRuleId, 10);
+      }
 
       if (mode === 'rule') {
         const ruleId = document.getElementById('backtest-rule-select')?.value;
@@ -203,11 +289,14 @@ class BacktestingUI {
       const result = await response.json();
       result.entry_price_basis = result.entry_price_basis || this.entryPriceBasis;
       result.exit_price_basis = result.exit_price_basis || result.pl_basis || this.exitPriceBasis;
-      result.pl_basis = result.pl_basis || result.exit_price_basis;
       this.currentResults = result;
+      // Default focus: realized exit unless plain holding-period (then final horizon)
+      this.focusLabel = (result.exit_strategy && result.exit_strategy !== 'holding_period')
+        ? 'REALIZED'
+        : `T+${result.n_steps}`;
       this.renderResults(result);
       this.hideLoading();
-      this.showSuccess(`Completed. Rows: ${result.row_count}`);
+      this.showSuccess(`Completed. Trades: ${result.row_count}`);
     } catch (error) {
       this.hideLoading();
       this.showError(`Backtesting failed: ${error.message}`);
@@ -217,177 +306,316 @@ class BacktestingUI {
     }
   }
 
+  getFocusMetrics() {
+    const m = this.currentResults?.metrics;
+    if (!m) return null;
+    if (this.focusLabel === 'REALIZED') return m.realized || m.final;
+    const step = parseInt(String(this.focusLabel).replace('T+', ''), 10);
+    return (m.per_step || [])[step - 1] || m.final;
+  }
+
+  getFocusExit(row) {
+    return row?.steps?.[this.focusLabel] || null;
+  }
+
   renderResults(result) {
     const container = document.getElementById('backtest-results-container');
     if (!container) return;
 
-    const headers = ['Ticker', 'Signal', 'Entry Time', 'Entry Price'];
-    for (let i = 1; i <= result.n_steps; i += 1) {
-      headers.push(`T+${i}`);
-    }
-
-    const stickyLeft = ['left-0', 'left-[120px]', 'left-[220px]', 'left-[420px]'];
-    const thead = `<tr>${headers.map((h, idx) => `<th class="${idx < 4 ? 'sticky z-20 bg-white' : 'bg-slate-100'} px-3 py-3 text-left text-xs font-semibold tracking-wide text-slate-700 uppercase border-b border-slate-200 ${idx < 4 ? stickyLeft[idx] : ''}">${h}</th>`).join('')}</tr>`;
-
     this.currentPage = 1;
+    const strategyLabel = {
+      holding_period: 'Holding Period',
+      target_stop: 'TP / SL',
+      exit_signal: 'Exit Signal'
+    }[result.exit_strategy] || 'Holding Period';
 
     container.innerHTML = `
       <section class="bg-gradient-to-b from-slate-50 to-white rounded-xl border border-slate-200 shadow-sm p-5">
         <div class="mb-4 flex flex-wrap items-center gap-2">
           <h3 class="text-lg font-semibold text-slate-900">Result</h3>
-          <span class="rounded-full bg-blue-100 text-blue-800 px-2.5 py-1 text-xs font-semibold">${result.row_count} rows</span>
+          <span class="rounded-full bg-blue-100 text-blue-800 px-2.5 py-1 text-xs font-semibold">${result.row_count} trades</span>
           <span class="rounded-full bg-slate-100 text-slate-700 px-2.5 py-1 text-xs font-semibold">Mode ${result.mode}</span>
           <span class="rounded-full bg-slate-100 text-slate-700 px-2.5 py-1 text-xs font-semibold">T ${result.timeframe}</span>
-          <span class="rounded-full bg-slate-100 text-slate-700 px-2.5 py-1 text-xs font-semibold">n ${result.n_steps}</span>
+          <span class="rounded-full bg-purple-100 text-purple-800 px-2.5 py-1 text-xs font-semibold">Exit: ${strategyLabel}</span>
           <span class="rounded-full bg-blue-100 text-blue-800 px-2.5 py-1 text-xs font-semibold">Entry ${(result.entry_price_basis || 'close').toUpperCase()}</span>
-          <span class="rounded-full bg-amber-100 text-amber-800 px-2.5 py-1 text-xs font-semibold">Exit ${(result.exit_price_basis || result.pl_basis || 'close').toUpperCase()}</span>
+          <span class="rounded-full bg-amber-100 text-amber-800 px-2.5 py-1 text-xs font-semibold">Exit ${(result.exit_price_basis || 'close').toUpperCase()}</span>
         </div>
-        ${this.buildMetricsHtml(result.metrics)}
-        <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+        ${this.buildFocusControlHtml(result)}
+        <div id="backtest-headline"></div>
+        <div id="backtest-equity"></div>
+        ${result.exit_strategy === 'holding_period' ? this.buildHoldingPeriodTableHtml(result.metrics) : ''}
+        ${this.buildBySymbolTableHtml(result.metrics)}
+        <div class="mt-2 overflow-x-auto rounded-lg border border-slate-200 bg-white">
           <table class="min-w-full bg-white">
-            <thead>${thead}</thead>
+            <thead id="backtest-results-head"></thead>
             <tbody id="backtest-results-body"></tbody>
           </table>
         </div>
         <div id="backtest-pagination-bar" class="mt-4 flex items-center justify-between"></div>
       </section>
     `;
+
+    const focusSelect = document.getElementById('backtest-focus-select');
+    if (focusSelect) {
+      focusSelect.addEventListener('change', (e) => {
+        this.focusLabel = e.target.value;
+        this.renderFocusViews();
+      });
+    }
+
+    this.renderFocusViews();
+  }
+
+  buildFocusControlHtml(result) {
+    if (result.exit_strategy !== 'holding_period') {
+      return `
+        <div class="mb-3 flex items-center gap-2 text-sm text-slate-600">
+          <i class="fas fa-flag-checkered text-slate-400"></i>
+          Showing <b class="text-slate-800">realized exits</b> (first exit that satisfied the strategy).
+        </div>`;
+    }
+    const options = [];
+    for (let i = 1; i <= result.n_steps; i += 1) {
+      options.push(`<option value="T+${i}" ${this.focusLabel === `T+${i}` ? 'selected' : ''}>T+${i}</option>`);
+    }
+    return `
+      <div class="mb-3 flex items-center gap-2">
+        <label class="text-sm font-medium text-slate-700">Holding Period</label>
+        <select id="backtest-focus-select" class="px-2 py-1 rounded border border-slate-300 text-sm">${options.join('')}</select>
+        <span class="text-xs text-slate-500">Trade list &amp; headline reflect the selected exit horizon.</span>
+      </div>`;
+  }
+
+  renderFocusViews() {
+    const m = this.getFocusMetrics();
+    const headline = document.getElementById('backtest-headline');
+    if (headline) headline.innerHTML = this.buildHeadlineHtml(m);
+    const equity = document.getElementById('backtest-equity');
+    if (equity) equity.innerHTML = this.buildEquityCurveHtml(m);
+    this.renderTableHead();
+    this.currentPage = 1;
     this.renderBacktestTable();
   }
 
-  buildBacktestRowHtml(row, nSteps, exitPriceBasis) {
-    const signalType = (row.signal_type || 'BUY').toUpperCase();
-    const signalClass = signalType === 'SELL' ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700';
-    const cells = [
-      `<span class="font-semibold text-slate-900">${row.symbol}</span>`,
-      `<span class="rounded-full px-2 py-1 text-xs font-semibold ${signalClass}">${signalType}</span>`,
-      `<span class="text-slate-700">${this.formatDateTime(row.entry_time)}</span>`,
-      `<span class="font-semibold text-slate-900">${Number(row.entry_price).toFixed(4)}</span><div class="text-[11px] text-slate-500 uppercase">${row.entry_price_basis || 'close'}</div>`
+  buildHeadlineHtml(m) {
+    if (!m) return '';
+    const fmtCash = (v) => v === null || v === undefined || Number.isNaN(Number(v)) ? '-' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 });
+    const fmtPct = (v) => v === null || v === undefined || Number.isNaN(Number(v)) ? '-' : `${Number(v).toFixed(2)}%`;
+    const fmtNum = (v, d = 2) => v === null || v === undefined || Number.isNaN(Number(v)) ? '-' : Number(v).toFixed(d);
+    const retClass = Number(m.total_return_pct) > 0 ? 'text-emerald-700' : Number(m.total_return_pct) < 0 ? 'text-rose-700' : 'text-slate-700';
+    const plClass = Number(m.net_pl_cash) > 0 ? 'text-emerald-700' : Number(m.net_pl_cash) < 0 ? 'text-rose-700' : 'text-slate-700';
+
+    const cards = [
+      ['Final Equity', fmtCash(m.final_equity), 'text-slate-900'],
+      ['Net P/L', `${Number(m.net_pl_cash) > 0 ? '+' : ''}${fmtCash(m.net_pl_cash)}`, plClass],
+      ['Total Return', `${Number(m.total_return_pct) > 0 ? '+' : ''}${fmtPct(m.total_return_pct)}`, retClass],
+      ['Max Drawdown', fmtPct(m.max_drawdown_pct), 'text-rose-700'],
+      ['Win Rate', fmtPct(m.win_rate), 'text-emerald-700'],
+      ['Trades', `${m.evaluated || 0}`, 'text-slate-900'],
+      ['Profit Factor', m.profit_factor === null || m.profit_factor === undefined ? '-' : fmtNum(m.profit_factor, 2), 'text-blue-700'],
+      ['Expectancy', fmtCash(m.expectancy_cash), plClass],
+      ['Avg Win / Loss', `${fmtCash(m.avg_win_cash)} / ${fmtCash(m.avg_loss_cash)}`, 'text-slate-700'],
+      ['Risk / Reward', m.risk_reward === null || m.risk_reward === undefined ? '-' : fmtNum(m.risk_reward, 2), 'text-slate-700'],
+      ['Sharpe (per-trade)', m.sharpe === null || m.sharpe === undefined ? '-' : fmtNum(m.sharpe, 2), 'text-slate-700'],
+      ['Commission', fmtCash(m.total_commission), 'text-slate-500']
     ];
-
-    const entryPriceNum = Number(row.entry_price);
-    for (let i = 1; i <= nSteps; i += 1) {
-      const step = row.steps?.[`T+${i}`] || null;
-      if (!step) {
-        cells.push('-');
-      } else {
-        const priceField = exitPriceBasis || 'close';
-        const basisNum = Number(step.basis_price ?? step[priceField]);
-        const pl = Number(step.pl ?? (basisNum - entryPriceNum));
-        const plPct = Number(step.pl_pct ?? (entryPriceNum === 0 ? 0 : (pl / entryPriceNum) * 100));
-        const plClass = pl > 0
-          ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
-          : pl < 0
-            ? 'text-rose-700 bg-rose-50 border-rose-200'
-            : 'text-slate-700 bg-slate-100 border-slate-300';
-        const sign = pl > 0 ? '+' : '';
-        cells.push(
-          `<div class="min-w-[220px] rounded-lg border border-slate-200 bg-white p-2">
-            <div class="mb-1 text-[11px] font-semibold text-slate-500">T+${i}</div>
-            <div class="grid grid-cols-2 gap-x-2 gap-y-1 text-[11px] text-slate-600">
-              <span>O <b class="text-slate-800">${Number(step.open).toFixed(4)}</b></span>
-              <span>H <b class="text-slate-800">${Number(step.high).toFixed(4)}</b></span>
-              <span>L <b class="text-slate-800">${Number(step.low).toFixed(4)}</b></span>
-              <span>C <b class="text-slate-800">${Number(step.close).toFixed(4)}</b></span>
-            </div>
-            <div class="mt-2 text-[11px] text-slate-500">Exit: <b class="text-slate-700 uppercase">${priceField}</b> (${basisNum.toFixed(4)})</div>
-            <div class="mt-2 rounded-md border px-2 py-1 text-xs font-semibold ${plClass}">
-              P/L ${sign}${pl.toFixed(4)} (${sign}${plPct.toFixed(2)}%)
-            </div>
-          </div>`
-        );
-      }
-    }
-
-    const stickyLeft = ['left-0 min-w-[120px]', 'left-[120px] min-w-[100px]', 'left-[220px] min-w-[200px]', 'left-[420px] min-w-[120px]'];
-    return `<tr class="odd:bg-white even:bg-slate-50 hover:bg-blue-50/40">${cells.map((v, idx) => `<td class="${idx < 4 ? 'sticky z-10 bg-white' : ''} px-3 py-2 align-top text-sm border-b border-slate-200 ${idx < 4 ? stickyLeft[idx] : ''}">${v}</td>`).join('')}</tr>`;
-  }
-
-  buildMetricsHtml(metrics) {
-    if (!metrics || !metrics.final) return '';
-
-    const final = metrics.final;
-    const formatNumber = (value, digits = 2) => value === null || value === undefined || Number.isNaN(Number(value)) ? '-' : Number(value).toFixed(digits);
-    const formatPct = (value) => value === null || value === undefined || Number.isNaN(Number(value)) ? '-' : `${Number(value).toFixed(2)}%`;
-    const plClass = Number(final.total_pl) > 0 ? 'text-emerald-700' : Number(final.total_pl) < 0 ? 'text-rose-700' : 'text-slate-700';
-    const metricCards = [
-      ['Final Horizon', metrics.final_horizon || '-', 'text-slate-900'],
-      ['Evaluated', `${final.evaluated || 0}/${metrics.total_entries || 0}`, 'text-slate-900'],
-      ['Win Rate', formatPct(final.win_rate), 'text-emerald-700'],
-      ['Total P/L', formatNumber(final.total_pl, 4), plClass],
-      ['Avg P/L %', formatPct(final.avg_pl_pct), plClass],
-      ['Profit Factor', final.profit_factor === null || final.profit_factor === undefined ? '-' : formatNumber(final.profit_factor, 2), 'text-blue-700']
-    ];
-
-    const perStepRows = (metrics.per_step || []).map((step) => {
-      const totalClass = Number(step.total_pl) > 0 ? 'text-emerald-700' : Number(step.total_pl) < 0 ? 'text-rose-700' : 'text-slate-700';
-      return `
-        <tr class="odd:bg-white even:bg-slate-50">
-          <td class="px-3 py-2 text-sm font-semibold text-slate-900">${step.label}</td>
-          <td class="px-3 py-2 text-sm text-slate-700">${step.evaluated}</td>
-          <td class="px-3 py-2 text-sm text-slate-700">${step.wins}/${step.losses}/${step.flats}</td>
-          <td class="px-3 py-2 text-sm text-slate-700">${formatPct(step.win_rate)}</td>
-          <td class="px-3 py-2 text-sm font-semibold ${totalClass}">${formatNumber(step.total_pl, 4)}</td>
-          <td class="px-3 py-2 text-sm ${totalClass}">${formatPct(step.avg_pl_pct)}</td>
-          <td class="px-3 py-2 text-sm text-slate-700">${formatNumber(step.best_pl, 4)} / ${formatNumber(step.worst_pl, 4)}</td>
-          <td class="px-3 py-2 text-sm text-slate-700">${step.missing}</td>
-        </tr>
-      `;
-    }).join('');
-    const bySymbolRows = (metrics.by_symbol || []).slice(0, 10).map((row) => {
-      const totalClass = Number(row.total_pl) > 0 ? 'text-emerald-700' : Number(row.total_pl) < 0 ? 'text-rose-700' : 'text-slate-700';
-      return `
-        <tr class="odd:bg-white even:bg-slate-50">
-          <td class="px-3 py-2 text-sm font-semibold text-slate-900">${row.symbol}</td>
-          <td class="px-3 py-2 text-sm text-slate-700">${row.evaluated}/${row.trades}</td>
-          <td class="px-3 py-2 text-sm text-slate-700">${formatPct(row.win_rate)}</td>
-          <td class="px-3 py-2 text-sm font-semibold ${totalClass}">${formatNumber(row.total_pl, 4)}</td>
-          <td class="px-3 py-2 text-sm ${totalClass}">${formatPct(row.avg_pl_pct)}</td>
-        </tr>
-      `;
-    }).join('');
 
     return `
-      <div class="mb-4 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
-        ${metricCards.map(([label, value, cls]) => `
+      <div class="mb-4 grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3">
+        ${cards.map(([label, value, cls]) => `
           <div class="rounded-lg border border-slate-200 bg-white p-3">
             <div class="text-[11px] font-semibold uppercase text-slate-500">${label}</div>
             <div class="mt-1 text-lg font-bold ${cls}">${value}</div>
           </div>
         `).join('')}
-      </div>
-      <div class="mb-4 overflow-x-auto rounded-lg border border-slate-200 bg-white">
-        <table class="min-w-full">
-          <thead>
-            <tr class="bg-slate-100">
-              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Horizon</th>
-              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Eval</th>
-              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">W/L/F</th>
-              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Win Rate</th>
-              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Total P/L</th>
-              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Avg P/L%</th>
-              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Best/Worst</th>
-              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Missing</th>
-            </tr>
-          </thead>
-          <tbody>${perStepRows || '<tr><td colspan="8" class="px-3 py-3 text-sm text-slate-500">No metric rows</td></tr>'}</tbody>
-        </table>
-      </div>
-      <div class="mb-4 overflow-x-auto rounded-lg border border-slate-200 bg-white">
-        <table class="min-w-full">
-          <thead>
-            <tr class="bg-slate-100">
-              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Ticker</th>
-              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Eval/Trade</th>
-              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Win Rate</th>
-              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Final P/L</th>
-              <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Avg P/L%</th>
-            </tr>
-          </thead>
-          <tbody>${bySymbolRows || '<tr><td colspan="5" class="px-3 py-3 text-sm text-slate-500">No symbol metrics</td></tr>'}</tbody>
-        </table>
-      </div>
-    `;
+      </div>`;
+  }
+
+  buildEquityCurveHtml(m) {
+    const pts = (m && m.equity_curve) || [];
+    if (pts.length < 2) {
+      return '<div class="mb-4 rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-500">Not enough trades for an equity curve.</div>';
+    }
+    const eqs = pts.map((p) => Number(p.equity));
+    const base = Number(m.initial_capital) || eqs[0];
+    const min = Math.min(...eqs, base);
+    const max = Math.max(...eqs, base);
+    const W = 600;
+    const H = 160;
+    const pad = 10;
+    const range = (max - min) || 1;
+    const x = (i) => pad + (i / (pts.length - 1)) * (W - 2 * pad);
+    const y = (v) => H - pad - ((v - min) / range) * (H - 2 * pad);
+    const linePts = pts.map((p, i) => `${x(i).toFixed(1)},${y(Number(p.equity)).toFixed(1)}`).join(' ');
+    const areaPts = `${pad.toFixed(1)},${(H - pad).toFixed(1)} ${linePts} ${(W - pad).toFixed(1)},${(H - pad).toFixed(1)}`;
+    const baseY = y(base).toFixed(1);
+    const up = Number(m.final_equity) >= base;
+    const stroke = up ? '#059669' : '#e11d48';
+    const fill = up ? 'rgba(5,150,105,0.12)' : 'rgba(225,29,72,0.12)';
+
+    return `
+      <div class="mb-4 rounded-lg border border-slate-200 bg-white p-4">
+        <div class="mb-2 flex items-center justify-between">
+          <div class="text-sm font-semibold text-slate-700">Equity Curve <span class="text-xs font-normal text-slate-400">(${this.focusLabel === 'REALIZED' ? 'realized exits' : this.focusLabel})</span></div>
+          <div class="text-xs text-slate-500">Peak ${max.toLocaleString(undefined, { maximumFractionDigits: 0 })} &middot; Trough ${min.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+        </div>
+        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:160px;">
+          <line x1="${pad}" y1="${baseY}" x2="${W - pad}" y2="${baseY}" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4 4" />
+          <polygon points="${areaPts}" fill="${fill}" stroke="none" />
+          <polyline points="${linePts}" fill="none" stroke="${stroke}" stroke-width="2" />
+        </svg>
+        <div class="mt-1 flex justify-between text-[11px] text-slate-400">
+          <span>Start ${base.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+          <span>End ${Number(m.final_equity).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+        </div>
+      </div>`;
+  }
+
+  buildHoldingPeriodTableHtml(metrics) {
+    if (!metrics || !Array.isArray(metrics.per_step)) return '';
+    const fmtCash = (v) => v === null || v === undefined || Number.isNaN(Number(v)) ? '-' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 });
+    const fmtPct = (v) => v === null || v === undefined || Number.isNaN(Number(v)) ? '-' : `${Number(v).toFixed(2)}%`;
+    const fmtNum = (v, d = 2) => v === null || v === undefined || Number.isNaN(Number(v)) ? '-' : Number(v).toFixed(d);
+    const rows = metrics.per_step.map((step) => {
+      const retClass = Number(step.total_return_pct) > 0 ? 'text-emerald-700' : Number(step.total_return_pct) < 0 ? 'text-rose-700' : 'text-slate-700';
+      const active = this.focusLabel === step.label ? 'bg-blue-50' : 'odd:bg-white even:bg-slate-50';
+      return `
+        <tr class="${active} cursor-pointer hover:bg-blue-50/60" data-focus="${step.label}">
+          <td class="px-3 py-2 text-sm font-semibold text-slate-900">${step.label}</td>
+          <td class="px-3 py-2 text-sm text-slate-700">${step.evaluated}</td>
+          <td class="px-3 py-2 text-sm text-slate-700">${fmtPct(step.win_rate)}</td>
+          <td class="px-3 py-2 text-sm font-semibold ${retClass}">${fmtPct(step.total_return_pct)}</td>
+          <td class="px-3 py-2 text-sm ${retClass}">${fmtCash(step.net_pl_cash)}</td>
+          <td class="px-3 py-2 text-sm text-rose-700">${fmtPct(step.max_drawdown_pct)}</td>
+          <td class="px-3 py-2 text-sm text-blue-700">${step.profit_factor === null || step.profit_factor === undefined ? '-' : fmtNum(step.profit_factor, 2)}</td>
+          <td class="px-3 py-2 text-sm text-slate-700">${fmtCash(step.expectancy_cash)}</td>
+        </tr>`;
+    }).join('');
+
+    setTimeout(() => {
+      document.querySelectorAll('#backtest-holding-table tr[data-focus]').forEach((tr) => {
+        tr.addEventListener('click', () => {
+          const label = tr.getAttribute('data-focus');
+          this.focusLabel = label;
+          const sel = document.getElementById('backtest-focus-select');
+          if (sel) sel.value = label;
+          this.renderResults(this.currentResults);
+        });
+      });
+    }, 0);
+
+    return `
+      <div class="mb-4">
+        <div class="mb-2 text-sm font-semibold text-slate-700">Holding Period Analysis <span class="text-xs font-normal text-slate-400">(click a row to focus)</span></div>
+        <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+          <table id="backtest-holding-table" class="min-w-full">
+            <thead>
+              <tr class="bg-slate-100">
+                <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Horizon</th>
+                <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Trades</th>
+                <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Win Rate</th>
+                <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Return %</th>
+                <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Net P/L</th>
+                <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Max DD</th>
+                <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Profit Factor</th>
+                <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Expectancy</th>
+              </tr>
+            </thead>
+            <tbody>${rows || '<tr><td colspan="8" class="px-3 py-3 text-sm text-slate-500">No metric rows</td></tr>'}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
+  buildBySymbolTableHtml(metrics) {
+    const list = (metrics && metrics.by_symbol) || [];
+    if (!list.length) return '';
+    const fmtPct = (v) => v === null || v === undefined || Number.isNaN(Number(v)) ? '-' : `${Number(v).toFixed(2)}%`;
+    const fmtNum = (v, d = 4) => v === null || v === undefined || Number.isNaN(Number(v)) ? '-' : Number(v).toFixed(d);
+    const rows = list.slice(0, 10).map((row) => {
+      const totalClass = Number(row.total_pl) > 0 ? 'text-emerald-700' : Number(row.total_pl) < 0 ? 'text-rose-700' : 'text-slate-700';
+      return `
+        <tr class="odd:bg-white even:bg-slate-50">
+          <td class="px-3 py-2 text-sm font-semibold text-slate-900">${row.symbol}</td>
+          <td class="px-3 py-2 text-sm text-slate-700">${row.evaluated}/${row.trades}</td>
+          <td class="px-3 py-2 text-sm text-slate-700">${fmtPct(row.win_rate)}</td>
+          <td class="px-3 py-2 text-sm font-semibold ${totalClass}">${fmtNum(row.total_pl, 4)}</td>
+          <td class="px-3 py-2 text-sm ${totalClass}">${fmtPct(row.avg_pl_pct)}</td>
+        </tr>`;
+    }).join('');
+    return `
+      <div class="mb-4">
+        <div class="mb-2 text-sm font-semibold text-slate-700">By Symbol <span class="text-xs font-normal text-slate-400">(final horizon, price P/L)</span></div>
+        <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+          <table class="min-w-full">
+            <thead>
+              <tr class="bg-slate-100">
+                <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Ticker</th>
+                <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Eval/Trade</th>
+                <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Win Rate</th>
+                <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Final P/L</th>
+                <th class="px-3 py-2 text-left text-xs font-semibold uppercase text-slate-700">Avg P/L%</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
+  renderTableHead() {
+    const head = document.getElementById('backtest-results-head');
+    if (!head) return;
+    const showReason = this.currentResults?.exit_strategy && this.currentResults.exit_strategy !== 'holding_period';
+    const headers = ['Ticker', 'Signal', 'Entry Time', 'Entry Price', 'Exit Time', 'Exit Price'];
+    if (showReason) headers.push('Exit Reason');
+    headers.push('P/L', 'P/L %');
+    head.innerHTML = `<tr>${headers.map((h) => `<th class="bg-slate-100 px-3 py-3 text-left text-xs font-semibold tracking-wide text-slate-700 uppercase border-b border-slate-200">${h}</th>`).join('')}</tr>`;
+  }
+
+  buildTradeRowHtml(row) {
+    const signalType = (row.signal_type || 'BUY').toUpperCase();
+    const signalClass = signalType === 'SELL' ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700';
+    const showReason = this.currentResults?.exit_strategy && this.currentResults.exit_strategy !== 'holding_period';
+    const step = this.getFocusExit(row);
+
+    const cells = [
+      `<span class="font-semibold text-slate-900">${row.symbol}</span>`,
+      `<span class="rounded-full px-2 py-1 text-xs font-semibold ${signalClass}">${signalType}</span>`,
+      `<span class="text-slate-700">${this.formatDateTime(row.entry_time)}</span>`,
+      `<span class="font-semibold text-slate-900">${Number(row.entry_price).toFixed(4)}</span>`
+    ];
+
+    if (!step) {
+      cells.push('<span class="text-slate-400">-</span>', '<span class="text-slate-400">-</span>');
+      if (showReason) cells.push('<span class="text-slate-400">-</span>');
+      cells.push('<span class="text-slate-400">-</span>', '<span class="text-slate-400">-</span>');
+    } else {
+      const pl = Number(step.pl);
+      const plPct = Number(step.pl_pct);
+      const plClass = pl > 0 ? 'text-emerald-700' : pl < 0 ? 'text-rose-700' : 'text-slate-700';
+      const sign = pl > 0 ? '+' : '';
+      cells.push(
+        `<span class="text-slate-700">${this.formatDateTime(step.time)}</span>`,
+        `<span class="font-semibold text-slate-900">${Number(step.exit_price).toFixed(4)}</span>`
+      );
+      if (showReason) {
+        const reason = step.exit_reason || 'time_exit';
+        const reasonClass = {
+          take_profit: 'bg-emerald-100 text-emerald-700',
+          stop_loss: 'bg-rose-100 text-rose-700',
+          exit_signal: 'bg-blue-100 text-blue-700',
+          time_exit: 'bg-slate-100 text-slate-600'
+        }[reason] || 'bg-slate-100 text-slate-600';
+        cells.push(`<span class="rounded-full px-2 py-1 text-xs font-semibold ${reasonClass}">${reason.replace('_', ' ')}</span>`);
+      }
+      cells.push(
+        `<span class="font-semibold ${plClass}">${sign}${pl.toFixed(4)}</span>`,
+        `<span class="${plClass}">${sign}${plPct.toFixed(2)}%</span>`
+      );
+    }
+
+    return `<tr class="odd:bg-white even:bg-slate-50 hover:bg-blue-50/40">${cells.map((v) => `<td class="px-3 py-2 align-top text-sm border-b border-slate-200">${v}</td>`).join('')}</tr>`;
   }
 
   renderBacktestTable() {
@@ -404,7 +632,7 @@ class BacktestingUI {
     const pageRows = rows.slice(start, end);
 
     tbody.innerHTML = pageRows.length > 0
-      ? pageRows.map((row) => this.buildBacktestRowHtml(row, this.currentResults.n_steps, this.currentResults.exit_price_basis || this.currentResults.pl_basis)).join('')
+      ? pageRows.map((row) => this.buildTradeRowHtml(row)).join('')
       : '<tr><td class="px-3 py-4 text-sm text-gray-500" colspan="999">No rows</td></tr>';
 
     this.renderBacktestPagination(totalItems, totalPages, totalItems === 0 ? 0 : start + 1, end);
@@ -478,6 +706,32 @@ class BacktestingUI {
     bar.appendChild(right);
   }
 
+  csvEscape(value) {
+    const s = value === null || value === undefined ? '' : String(value);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }
+
+  downloadCsv(filename, csvText) {
+    // Route through the backend so the WebView2/PyWebView runtime saves via its
+    // native download manager (blob + `download` attribute is unreliable there).
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/api/backtest/export-csv';
+    form.style.display = 'none';
+    const addField = (name, val) => {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = name;
+      input.value = val;
+      form.appendChild(input);
+    };
+    addField('filename', filename);
+    addField('csv', csvText);
+    document.body.appendChild(form);
+    form.submit();
+    setTimeout(() => { if (form.parentNode) document.body.removeChild(form); }, 1000);
+  }
+
   exportCsv() {
     if (!this.currentResults || !Array.isArray(this.currentResults.rows)) {
       this.showError('No results available to export');
@@ -485,44 +739,33 @@ class BacktestingUI {
     }
 
     const result = this.currentResults;
-    const headers = ['Ticker', 'Signal', 'Entry Time', 'Entry Price', 'Entry Basis'];
-    for (let i = 1; i <= result.n_steps; i += 1) {
-      headers.push(`T+${i} OHLC`, `T+${i} P/L`, `T+${i} P/L%`);
-    }
+    const showReason = result.exit_strategy && result.exit_strategy !== 'holding_period';
+    const headers = ['Ticker', 'Signal', 'Entry Time', 'Entry Price', 'Exit Time', 'Exit Price'];
+    if (showReason) headers.push('Exit Reason');
+    headers.push('P/L', 'P/L %', 'Focus');
 
-    const lines = [headers.join(',')];
-
+    const esc = (v) => this.csvEscape(v);
+    const lines = [headers.map(esc).join(',')];
     for (const row of result.rows) {
-      const line = [row.symbol, row.signal_type || 'BUY', this.formatDateTime(row.entry_time), row.entry_price, row.entry_price_basis || result.entry_price_basis || 'close'];
-      const entryPriceNum = Number(row.entry_price);
-      for (let i = 1; i <= result.n_steps; i += 1) {
-        const step = row.steps?.[`T+${i}`] || null;
-        if (!step) {
-          line.push('', '', '');
-        } else {
-          const priceField = result.exit_price_basis || result.pl_basis || 'close';
-          const basisNum = Number(step.basis_price ?? step[priceField]);
-          const pl = Number(step.pl ?? (basisNum - entryPriceNum));
-          const plPct = Number(step.pl_pct ?? (entryPriceNum === 0 ? 0 : (pl / entryPriceNum) * 100));
-          line.push(
-            `"O:${step.open} H:${step.high} L:${step.low} C:${step.close} BASIS(${priceField.toUpperCase()}):${basisNum}"`,
-            pl.toFixed(6),
-            plPct.toFixed(4)
-          );
-        }
-      }
-      lines.push(line.join(','));
+      const step = this.getFocusExit(row);
+      const line = [
+        row.symbol,
+        row.signal_type || 'BUY',
+        this.formatDateTime(row.entry_time),
+        row.entry_price,
+        step ? this.formatDateTime(step.time) : '',
+        step ? step.exit_price : ''
+      ];
+      if (showReason) line.push(step ? (step.exit_reason || 'time_exit') : '');
+      line.push(
+        step ? Number(step.pl).toFixed(6) : '',
+        step ? Number(step.pl_pct).toFixed(4) : '',
+        this.focusLabel
+      );
+      lines.push(line.map(esc).join(','));
     }
 
-    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `backtest_${Date.now()}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    this.downloadCsv(`backtest_${Date.now()}.csv`, lines.join('\n'));
   }
 
   showLoading(message) {
