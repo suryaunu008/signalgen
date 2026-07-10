@@ -392,6 +392,65 @@ class RuleEngine:
             # Catch any other unexpected errors
             raise RuleEvaluationError(f"Unexpected error during rule evaluation: {str(e)}")
     
+    def evaluate_detailed(self, rule: Dict[str, Any], indicator_values: Dict[str, float]) -> Dict[str, Any]:
+        """Evaluate a rule and report per-condition pass/fail plus resolved values.
+
+        Same trigger semantics as ``evaluate`` (AND-only), but instead of a bare
+        boolean it returns which conditions matched and the numeric operands that
+        were compared. This powers the screener's "matched N/M" summary and the
+        per-condition ✓/✗ breakdown so a lolos/gagal result can be explained
+        (see #4). Comparison logic is delegated to ``evaluate_condition`` so it
+        stays in lockstep with ``evaluate``.
+
+        Returns::
+
+            {
+              "triggered": bool,          # rule as a whole fired
+              "matched": int,             # conditions that passed
+              "total": int,               # total conditions
+              "conditions": [
+                {"left", "op", "right", "passed",
+                 "left_value"?, "right_value"?}  # values omitted for CROSS ops
+              ]
+            }
+        """
+        self.validate_rule(rule)
+        conditions = rule.get("conditions", [])
+        logic = rule.get("logic", "AND")
+
+        details = []
+        for condition in conditions:
+            passed = bool(self.evaluate_condition(condition, indicator_values))
+            op = condition.get("op")
+            detail = {
+                "left": condition.get("left"),
+                "op": op,
+                "right": condition.get("right"),
+                "passed": passed,
+            }
+            # Resolved numeric operands help explain the result. Cross operators
+            # compare current vs previous values, so a single pair isn't
+            # meaningful there — skip them.
+            if op not in ("CROSS_UP", "CROSS_DOWN"):
+                try:
+                    left_mult = self._get_condition_multiplier(condition, "left")
+                    right_mult = self._get_condition_multiplier(condition, "right")
+                    detail["left_value"] = self._get_operand_value(condition.get("left"), indicator_values) * left_mult
+                    detail["right_value"] = self._get_operand_value(condition.get("right"), indicator_values) * right_mult
+                except RuleEvaluationError:
+                    pass
+            details.append(detail)
+
+        matched = sum(1 for d in details if d["passed"])
+        total = len(details)
+        triggered = total > 0 and logic == "AND" and matched == total
+        return {
+            "triggered": triggered,
+            "matched": matched,
+            "total": total,
+            "conditions": details,
+        }
+
     def evaluate_condition(self, condition: Dict[str, Any], indicator_values: Dict[str, float]) -> bool:
         """
         Evaluate a single condition.

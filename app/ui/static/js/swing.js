@@ -44,6 +44,7 @@ class SwingTradingUI {
     this.setupEventListeners();
     await this.loadTickerUniverses();
     await this.loadRules();
+    this.updateFormValidity();
   }
 
   setupEventListeners() {
@@ -60,6 +61,21 @@ class SwingTradingUI {
         this.runScreening();
       });
     }
+
+    // Screening period mode (Latest vs Historical) + reactive validation.
+    ['swing-mode-latest', 'swing-mode-historical'].forEach((id) => {
+      const radio = document.getElementById(id);
+      if (radio) radio.addEventListener('change', () => this.applyModeState());
+    });
+    ['swing-universe-select', 'swing-rule-select', 'swing-timeframe', 'swing-lookback', 'swing-start-date', 'swing-end-date']
+      .forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.addEventListener('input', () => this.updateFormValidity());
+          el.addEventListener('change', () => this.updateFormValidity());
+        }
+      });
+    this.applyModeState();
 
     const fillYahooCacheButton = document.getElementById('fill-yahoo-cache-btn');
     if (fillYahooCacheButton) {
@@ -313,6 +329,58 @@ class SwingTradingUI {
     return Math.min(365, Math.max(1, parsed));
   }
 
+  getScreeningMode() {
+    return document.getElementById('swing-mode-historical')?.checked ? 'historical' : 'latest';
+  }
+
+  // Show only the fields relevant to the active mode, then re-validate.
+  applyModeState() {
+    const mode = this.getScreeningMode();
+    const latestFields = document.getElementById('swing-latest-fields');
+    const historicalFields = document.getElementById('swing-historical-fields');
+    if (latestFields) latestFields.classList.toggle('hidden', mode !== 'latest');
+    if (historicalFields) historicalFields.classList.toggle('hidden', mode !== 'historical');
+    this.updateFormValidity();
+  }
+
+  // Returns { valid, message } for the current mode's required parameters.
+  validateScreeningForm() {
+    const ruleId = document.getElementById('swing-rule-select')?.value;
+    const universeId = document.getElementById('swing-universe-select')?.value;
+    const timeframe = document.getElementById('swing-timeframe')?.value;
+
+    if (!universeId) return { valid: false, message: 'Select a ticker universe to continue.' };
+    if (!ruleId) return { valid: false, message: 'Select a rule to continue.' };
+    if (!timeframe) return { valid: false, message: 'Select a timeframe to continue.' };
+
+    if (this.getScreeningMode() === 'historical') {
+      const start = document.getElementById('swing-start-date')?.value;
+      const end = document.getElementById('swing-end-date')?.value;
+      if (!start || !end) return { valid: false, message: 'Set both start and end dates.' };
+      if (new Date(`${end}T00:00:00`) < new Date(`${start}T00:00:00`)) {
+        return { valid: false, message: 'End date must be on or after start date.' };
+      }
+    } else {
+      const raw = document.getElementById('swing-lookback')?.value;
+      const parsed = parseInt(raw, 10);
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        return { valid: false, message: 'Enter a lookback of at least 1 day.' };
+      }
+    }
+    return { valid: true, message: '' };
+  }
+
+  // Keep the Run button and hint in sync with the current inputs. Never fights
+  // the in-progress "Cancel" state (which must stay clickable).
+  updateFormValidity() {
+    if (this.screeningInProgress) return;
+    const { valid, message } = this.validateScreeningForm();
+    const button = document.getElementById('run-screening-btn');
+    const hint = document.getElementById('swing-validation-hint');
+    if (button) button.disabled = !valid;
+    if (hint) hint.textContent = valid ? '' : message;
+  }
+
   getHistoricalDateRange() {
     const startValue = document.getElementById('swing-start-date')?.value || '';
     const endValue = document.getElementById('swing-end-date')?.value || '';
@@ -388,8 +456,8 @@ class SwingTradingUI {
     if (!button) return;
     button.disabled = inProgress;
     button.innerHTML = inProgress
-      ? '<i class="fas fa-spinner fa-spin mr-2"></i>Filling...'
-      : '<i class="fas fa-download mr-2"></i>Fill Data';
+      ? '<i class="fas fa-spinner fa-spin mr-2"></i>Downloading...'
+      : '<i class="fas fa-download mr-2"></i>Download Market Data';
   }
 
   showCacheStatus(message, type = 'info') {
@@ -414,12 +482,12 @@ class SwingTradingUI {
     const timeframes = this.getSelectedCacheTimeframes();
     if (!universeId) {
       this.showError('Please select a ticker universe');
-      this.showCacheStatus('Select a ticker universe before filling Yahoo cache.', 'error');
+      this.showCacheStatus('Select a ticker universe before downloading market data.', 'error');
       return;
     }
     if (timeframes.length === 0) {
       this.showError('Please select at least one timeframe');
-      this.showCacheStatus('Select at least one timeframe before filling Yahoo cache.', 'error');
+      this.showCacheStatus('Select at least one timeframe before downloading market data.', 'error');
       return;
     }
 
@@ -429,8 +497,8 @@ class SwingTradingUI {
 
     try {
       this.setCacheBackfillState(true);
-      this.showCacheStatus(`Filling Yahoo cache for ${universeName}: ${tickerCount} tickers, ${timeframes.join(', ')}.`, 'info');
-      this.showLoading('Filling Yahoo cache...');
+      this.showCacheStatus(`Downloading market data for ${universeName}: ${tickerCount} tickers, ${timeframes.join(', ')}.`, 'info');
+      this.showLoading('Downloading market data...');
 
       const response = await fetch('/api/swing/backfill-yahoo-cache', {
         method: 'POST',
@@ -443,20 +511,20 @@ class SwingTradingUI {
 
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
-        throw new Error(error.detail || 'Yahoo cache fill failed');
+        throw new Error(error.detail || 'Market data download failed');
       }
 
       const result = await response.json();
       const errors = Array.isArray(result.errors) ? result.errors.length : 0;
       const items = Array.isArray(result.items) ? result.items.length : 0;
-      const message = `Yahoo cache filled: ${result.total_candles || 0} candles across ${items} symbol/timeframe jobs${errors ? `, ${errors} errors` : ''}.`;
+      const message = `Market data downloaded: ${result.total_candles || 0} candles across ${items} symbol/timeframe jobs${errors ? `, ${errors} errors` : ''}.`;
       this.showCacheStatus(message, errors ? 'error' : 'success');
       this.showMessage(message, errors ? 'error' : 'success');
     } catch (error) {
-      const message = `Yahoo cache fill failed: ${error.message}`;
+      const message = `Market data download failed: ${error.message}`;
       this.showCacheStatus(message, 'error');
       this.showError(message);
-      console.error('Yahoo cache fill error:', error);
+      console.error('Market data download error:', error);
     } finally {
       this.hideLoading();
       this.setCacheBackfillState(false);
@@ -511,22 +579,16 @@ class SwingTradingUI {
 
   async runScreening() {
     try {
+      const { valid, message } = this.validateScreeningForm();
+      if (!valid) {
+        this.showError(message);
+        return;
+      }
+
+      const mode = this.getScreeningMode();
       const ruleId = document.getElementById('swing-rule-select')?.value;
       const universeId = document.getElementById('swing-universe-select')?.value;
       const timeframe = document.getElementById('swing-timeframe')?.value || '1d';
-      const lookbackDays = this.getSafeLookbackDays();
-      const historicalRange = this.getHistoricalDateRange();
-      const lookbackInput = document.getElementById('swing-lookback');
-      if (lookbackInput) lookbackInput.value = String(lookbackDays);
-
-      if (!ruleId) {
-        this.showError('Please select a rule');
-        return;
-      }
-      if (!universeId) {
-        this.showError('Please select a ticker universe');
-        return;
-      }
 
       this.setScreeningState(true);
       this.showLoading('Running swing screening...');
@@ -536,14 +598,21 @@ class SwingTradingUI {
       const payload = {
         rule_id: parseInt(ruleId, 10),
         ticker_universe_id: parseInt(universeId, 10),
-        timeframe,
-        lookback_days: lookbackDays
+        timeframe
       };
-      if (historicalRange) {
+      if (mode === 'historical') {
+        // Only send explicit dates; lookback is irrelevant in this mode.
+        const historicalRange = this.getHistoricalDateRange();
         payload.start_date = historicalRange.start_date;
         payload.end_date = historicalRange.end_date;
         payload.display_start = historicalRange.display_start;
         payload.display_end = historicalRange.display_end;
+      } else {
+        // Latest: send only the lookback so the backend evaluates as-of now.
+        const lookbackDays = this.getSafeLookbackDays();
+        const lookbackInput = document.getElementById('swing-lookback');
+        if (lookbackInput) lookbackInput.value = String(lookbackDays);
+        payload.lookback_days = lookbackDays;
       }
 
       const response = await fetch('/api/swing/screen', {
@@ -575,8 +644,36 @@ class SwingTradingUI {
     } finally {
       this.hideLoading();
       this.setScreeningState(false);
+      this.updateFormValidity();
       this.activeScreeningController = null;
     }
+  }
+
+  // Renders the live "current condition" state for a result row so a completed
+  // signal is never mistaken for the current bar (#5). When there is no forming
+  // candle (e.g. Historical mode or a closed market), the signal already IS the
+  // latest state, so we show a neutral dash.
+  buildCurrentConditionCell(r) {
+    if (r.status !== 'success') {
+      const dash = document.createElement('span');
+      dash.className = 'text-gray-400';
+      dash.textContent = '-';
+      return dash;
+    }
+    if (!r.has_open_candle || r.current_condition === null || r.current_condition === undefined) {
+      const neutral = document.createElement('span');
+      neutral.className = 'text-gray-400';
+      neutral.title = 'No forming candle; the signal reflects the latest closed candle.';
+      neutral.textContent = '—';
+      return neutral;
+    }
+    const chip = document.createElement('span');
+    chip.className = `px-2 py-0.5 rounded text-xs ${r.current_condition ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`;
+    chip.textContent = r.current_condition ? 'Still holds' : 'Cleared';
+    if (r.current_timestamp) {
+      chip.title = `Current bar (${this.formatDateTime(r.current_timestamp)}): rule ${r.current_condition ? 'still satisfied' : 'no longer satisfied'}`;
+    }
+    return chip;
   }
 
   buildStatCard(label, value, className) {
@@ -629,15 +726,41 @@ class SwingTradingUI {
     summaryGrid.appendChild(this.buildStatCard('Duration (ms)', summary.duration_ms || 0, 'bg-slate-50 text-slate-600'));
 
     summaryCard.appendChild(summaryTitle);
+
+    // Screening context (#8): universe, rule, timeframe, mode and the period
+    // that was actually evaluated — so results are readable at a glance.
+    const context = document.createElement('div');
+    context.className = 'flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-700 mb-4';
+    const payload = result.request_payload || {};
+    const universe = this.universes.find((u) => String(u.id) === String(payload.ticker_universe_id));
+    const ruleSelect = document.getElementById('swing-rule-select');
+    const ruleName = ruleSelect?.selectedOptions?.[0]?.textContent || '-';
+    const isHistorical = !!(summary.screening_start && summary.screening_end);
+    [
+      ['Universe', universe?.name || '-'],
+      ['Rule', ruleName],
+      ['Timeframe', (payload.timeframe || summary.timeframe || '-').toUpperCase?.() || '-'],
+      ['Mode', isHistorical ? 'Historical' : 'Latest'],
+    ].forEach(([label, value]) => {
+      const chip = document.createElement('span');
+      const strong = document.createElement('span');
+      strong.className = 'text-gray-500';
+      strong.textContent = `${label}: `;
+      chip.appendChild(strong);
+      chip.appendChild(document.createTextNode(value));
+      context.appendChild(chip);
+    });
+    summaryCard.appendChild(context);
+
     summaryCard.appendChild(summaryGrid);
     const period = document.createElement('p');
     period.className = 'text-sm text-gray-600 mb-2';
-    if (summary.screening_start && summary.screening_end) {
+    if (isHistorical) {
       const endDate = new Date(summary.screening_end);
       endDate.setDate(endDate.getDate() - 1);
-      period.textContent = `Historical period: ${this.formatDate(summary.screening_start)} - ${this.formatDate(endDate)}`;
+      period.textContent = `Historical period: ${this.formatDate(summary.screening_start)} - ${this.formatDate(endDate)} · Evaluated as of ${this.formatDate(endDate)}`;
     } else {
-      period.textContent = `Lookback period: ${summary.lookback_days || '-'} days`;
+      period.textContent = `Lookback period: ${summary.lookback_days || '-'} days · Evaluated as of latest close (${this.formatDateTime(new Date())})`;
     }
     summaryCard.appendChild(period);
     if (result.request_id) {
@@ -689,7 +812,8 @@ class SwingTradingUI {
       { label: 'Symbol', key: 'symbol' },
       { label: 'Signal', key: 'signal' },
       { label: 'Price', key: 'price' },
-      { label: 'Timestamp', key: 'timestamp' },
+      { label: 'Signal Time', key: 'timestamp' },
+      { label: 'Current', key: null },
       { label: 'Status', key: 'status' },
       { label: 'Chart', key: null }
     ];
@@ -727,7 +851,7 @@ class SwingTradingUI {
     }
 
     const rows = this.currentResults.results;
-    const headers = ['symbol', 'signal', 'price', 'timestamp', 'status', 'error_message'];
+    const headers = ['symbol', 'signal', 'price', 'timestamp', 'matched_conditions', 'total_conditions', 'current_condition', 'status', 'error_message'];
     const lines = [headers.join(',')];
 
     rows.forEach((row) => {
@@ -831,6 +955,14 @@ class SwingTradingUI {
         dash.textContent = '-';
         signalTd.appendChild(dash);
       }
+      // "matched N/M" explains both hits and near-misses (why a ticker did or
+      // did not pass), which is what makes cases like Tesla debuggable (#4).
+      if (r.status === 'success' && Number.isFinite(r.total_conditions) && r.total_conditions > 0) {
+        const matched = document.createElement('div');
+        matched.className = 'mt-1 text-xs text-gray-500';
+        matched.textContent = `${r.matched_conditions}/${r.total_conditions} matched`;
+        signalTd.appendChild(matched);
+      }
 
       const price = document.createElement('td');
       price.className = 'px-4 py-3 text-sm';
@@ -838,7 +970,13 @@ class SwingTradingUI {
 
       const timestamp = document.createElement('td');
       timestamp.className = 'px-4 py-3 text-sm';
+      // This is the CLOSED candle the signal was generated on ("as of"), not the
+      // live bar — that distinction is what the "Current" column clarifies (#5).
       timestamp.textContent = r.timestamp ? this.formatDateTime(r.timestamp) : '-';
+
+      const current = document.createElement('td');
+      current.className = 'px-4 py-3 text-sm';
+      current.appendChild(this.buildCurrentConditionCell(r));
 
       const status = document.createElement('td');
       status.className = 'px-4 py-3 text-sm';
@@ -857,9 +995,11 @@ class SwingTradingUI {
       chart.className = 'px-4 py-3 text-sm';
       const chartBtn = document.createElement('button');
       chartBtn.className = 'w-9 h-9 rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed';
-      chartBtn.title = r.signal ? 'Open chart' : 'Chart is available for signal rows';
+      // Available for any successful row (incl. near-misses) so the condition
+      // breakdown can be inspected, not just for firing signals (#4).
+      chartBtn.title = (r.status === 'success' && r.timestamp) ? 'Open chart & condition details' : 'Chart is available for successfully screened rows';
       chartBtn.dataset.chartIndex = String(r._screenIndex ?? 0);
-      chartBtn.disabled = !r.signal || !r.timestamp;
+      chartBtn.disabled = r.status !== 'success' || !r.timestamp;
       chartBtn.innerHTML = '<i class="fas fa-chart-line"></i>';
       chart.appendChild(chartBtn);
 
@@ -867,6 +1007,7 @@ class SwingTradingUI {
       tr.appendChild(signalTd);
       tr.appendChild(price);
       tr.appendChild(timestamp);
+      tr.appendChild(current);
       tr.appendChild(status);
       tr.appendChild(chart);
       tbody.appendChild(tr);
@@ -973,7 +1114,7 @@ class SwingTradingUI {
       before: 80,
       after: 40,
       enabled: new Set(),
-      showRule: false,
+      showRule: true,
       showRuler: false,
       rulerStart: null,
       rulerPreview: null,
@@ -1113,13 +1254,38 @@ class SwingTradingUI {
       return;
     }
 
+    // Per-condition pass/fail comes from the screening result row (evaluated on
+    // the signal candle), matched to the rule's conditions by index (#4).
+    const detail = Array.isArray(this.chartState?.row?.conditions_detail)
+      ? this.chartState.row.conditions_detail
+      : [];
+
     const list = document.createElement('div');
     list.className = 'space-y-2';
     conditions.forEach((condition, index) => {
+      const cd = detail[index];
       const item = document.createElement('div');
-      item.className = 'rounded-md border border-gray-200 bg-white px-3 py-2 text-sm font-mono text-gray-800';
+      item.className = 'rounded-md border px-3 py-2 text-sm font-mono flex items-start gap-2 '
+        + (cd
+          ? (cd.passed ? 'border-green-200 bg-green-50 text-green-800' : 'border-amber-200 bg-amber-50 text-amber-800')
+          : 'border-gray-200 bg-white text-gray-800');
+
+      if (cd) {
+        const mark = document.createElement('span');
+        mark.className = 'font-bold';
+        mark.textContent = cd.passed ? '✓' : '✗';
+        item.appendChild(mark);
+      }
+
+      const text = document.createElement('span');
       const prefix = index === 0 ? 'WHEN' : (rule.logic || 'AND');
-      item.textContent = `${prefix} ${this.formatCondition(condition)}`;
+      let line = `${prefix} ${this.formatCondition(condition)}`;
+      // Append the actual numbers that were compared, when available.
+      if (cd && Number.isFinite(cd.left_value) && Number.isFinite(cd.right_value)) {
+        line += `  (${this.formatOperand(Number(cd.left_value.toFixed(4)))} ${condition.op || ''} ${this.formatOperand(Number(cd.right_value.toFixed(4)))})`;
+      }
+      text.textContent = line;
+      item.appendChild(text);
       list.appendChild(item);
     });
     panel.appendChild(list);

@@ -1269,7 +1269,7 @@
                 <div id="swing-message"></div>
                 <div id="swing-loading" class="hidden mb-4"></div>
 
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                   <div>
                     <label class="block text-sm font-medium text-gray-700 mb-2"
                       >Ticker Universe</label
@@ -1307,8 +1307,28 @@
                       <option value="1d" selected>1 Day</option>
                     </select>
                   </div>
+                </div>
 
-                  <div>
+                <!-- Screening period mode: Latest vs Historical are mutually
+                     exclusive so the user always knows which period the system
+                     actually evaluates. -->
+                <div class="mb-4">
+                  <span class="block text-sm font-medium text-gray-700 mb-2">Screening Period</span>
+                  <div class="inline-flex rounded-md border border-gray-300 overflow-hidden" role="radiogroup" aria-label="Screening period mode">
+                    <label class="cursor-pointer">
+                      <input type="radio" name="swing-mode" id="swing-mode-latest" value="latest" class="sr-only peer" checked />
+                      <span class="inline-block px-4 py-2 text-sm bg-white peer-checked:bg-blue-600 peer-checked:text-white">Latest</span>
+                    </label>
+                    <label class="cursor-pointer border-l border-gray-300">
+                      <input type="radio" name="swing-mode" id="swing-mode-historical" value="historical" class="sr-only peer" />
+                      <span class="inline-block px-4 py-2 text-sm bg-white peer-checked:bg-blue-600 peer-checked:text-white">Historical</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                  <!-- Latest mode: lookback only -->
+                  <div id="swing-latest-fields">
                     <label class="block text-sm font-medium text-gray-700 mb-2"
                       >Lookback Days</label
                     >
@@ -1320,37 +1340,43 @@
                       max="365"
                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
+                    <p class="mt-1 text-xs text-gray-500">Evaluates the latest candle using the last N days of data.</p>
                   </div>
 
-                  <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-2"
-                      >Screening Start</label
-                    >
-                    <input
-                      type="date"
-                      id="swing-start-date"
-                      class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-2"
-                      >Screening End</label
-                    >
-                    <input
-                      type="date"
-                      id="swing-end-date"
-                      class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
+                  <!-- Historical mode: explicit start/end -->
+                  <div id="swing-historical-fields" class="hidden grid grid-cols-1 sm:grid-cols-2 gap-4 md:col-span-2">
+                    <div>
+                      <label class="block text-sm font-medium text-gray-700 mb-2"
+                        >Start Date</label
+                      >
+                      <input
+                        type="date"
+                        id="swing-start-date"
+                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    <div>
+                      <label class="block text-sm font-medium text-gray-700 mb-2"
+                        >End Date</label
+                      >
+                      <input
+                        type="date"
+                        id="swing-end-date"
+                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
                   </div>
                 </div>
 
-                <button
-                  id="run-screening-btn"
-                  class="inline-flex items-center px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
-                >
-                  <i class="fas fa-search mr-2"></i>Run Screening
-                </button>
+                <div class="flex items-center gap-3">
+                  <button
+                    id="run-screening-btn"
+                    class="inline-flex items-center px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+                  >
+                    <i class="fas fa-search mr-2"></i>Run Screening
+                  </button>
+                  <p id="swing-validation-hint" class="text-sm text-gray-500"></p>
+                </div>
               </section>
 
               <!-- Screening Results -->
@@ -1363,7 +1389,7 @@
           <div id="tab-content-data" class="tab-content">
             <div class="view-heading">
               <h2>Data</h2>
-              <p>Maintain ticker universes and Yahoo Finance OHLCV cache.</p>
+              <p>Maintain ticker universes and market data (Yahoo Finance OHLCV).</p>
             </div>
 
             <div class="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
@@ -1375,18 +1401,18 @@
                   <div>
                     <h2 class="text-xl font-semibold flex items-center">
                       <i class="fas fa-database mr-2 text-indigo-600"></i>
-                      Yahoo Cache
+                      Market Data
                     </h2>
                     <p class="text-sm text-gray-500 mt-1">
-                      Fill OHLCV data for the selected universe up to Yahoo
-                      Finance limits.
+                      Download historical OHLCV market data (via Yahoo Finance)
+                      for the selected universe, up to provider limits.
                     </p>
                   </div>
                   <button
                     id="fill-yahoo-cache-btn"
                     class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors text-sm disabled:opacity-60 disabled:cursor-not-allowed"
                   >
-                    <i class="fas fa-download mr-2"></i>Fill Data
+                    <i class="fas fa-download mr-2"></i>Download Market Data
                   </button>
                 </div>
 

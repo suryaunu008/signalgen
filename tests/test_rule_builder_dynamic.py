@@ -71,6 +71,33 @@ def test_rule_engine_applies_optional_operand_multipliers():
     assert engine.evaluate(rule, {"PRICE": 119, "MA20": 100}) is False
 
 
+def test_rule_engine_evaluate_detailed_reports_per_condition_matches():
+    engine = RuleEngine()
+    rule = {
+        "id": 1,
+        "name": "detailed",
+        "type": "custom",
+        "logic": "AND",
+        "conditions": [
+            {"left": "PRICE", "op": ">", "right": "MA20"},
+            {"left": "RSI14", "op": ">", "right": 50},
+        ],
+    }
+    result = engine.evaluate_detailed(rule, {"PRICE": 110, "MA20": 100, "RSI14": 45})
+
+    assert result["triggered"] is False
+    assert result["matched"] == 1
+    assert result["total"] == 2
+    assert result["conditions"][0]["passed"] is True
+    assert result["conditions"][0]["left_value"] == 110
+    assert result["conditions"][0]["right_value"] == 100
+    assert result["conditions"][1]["passed"] is False
+
+    all_pass = engine.evaluate_detailed(rule, {"PRICE": 110, "MA20": 100, "RSI14": 55})
+    assert all_pass["triggered"] is True
+    assert all_pass["matched"] == 2
+
+
 def test_rule_engine_multiplier_defaults_to_one_for_legacy_rules():
     engine = RuleEngine()
     rule = _rule("PRICE", ">", "MA20")

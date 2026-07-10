@@ -282,6 +282,38 @@ class CandleBuilder:
             
             return candle_completed, completed_candle
     
+    def finalize_candle(self, symbol: str) -> Optional[Dict]:
+        """Force-close the current forming candle and return it as completed.
+
+        Streaming semantics only complete a candle when the *next* period's bar
+        arrives, so the most recently fed bar stays in ``current_candles`` and
+        never becomes a completed candle. For consumers that feed already-closed
+        bars (e.g. swing screening / backtests over historical candles) this
+        method promotes that last bar into the completed set so it can be
+        evaluated, instead of being silently dropped. No-op if nothing is
+        building. This does not affect live streaming callers, which never call
+        it.
+        """
+        with self.lock:
+            current_candle = self.current_candles.get(symbol)
+            if not current_candle:
+                return None
+
+            completed_candle = {
+                'open': current_candle['open'],
+                'high': current_candle['high'],
+                'low': current_candle['low'],
+                'close': current_candle['close'],
+                'volume': current_candle['volume'],
+                'timestamp': current_candle['close_time'],
+                'start_time': current_candle['start_time'],
+                'close_time': current_candle['close_time']
+            }
+            self.completed_candles[symbol].append(completed_candle)
+            self.last_candle_times[symbol] = current_candle['close_time']
+            self.current_candles[symbol] = None
+            return completed_candle
+
     def get_completed_candles(self, symbol: str, count: Optional[int] = None) -> List[Dict]:
         """
         Get completed candles for a symbol.

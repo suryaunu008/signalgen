@@ -46,11 +46,19 @@ class SwingScreeningEngine:
     This engine screens a universe of tickers against a trading rule
     and returns current signal status.
     """
-    
+
+    # Number of trailing candles the per-symbol IndicatorEngine keeps. Warmup
+    # fetches are sized to fully saturate this window so that the indicators
+    # as-of a given end date are identical regardless of how wide the evaluation
+    # window (Latest lookback vs Historical start/end) was specified. This is
+    # what makes Latest and Historical screening reproducible for the same end
+    # date. Must match the IndicatorEngine instances created in _screen_ticker.
+    INDICATOR_HISTORY = 250
+
     def __init__(self, timeframe: str = '1d'):
         """
         Initialize swing screening engine.
-        
+
         Args:
             timeframe: Candle timeframe ('1h', '4h', '1d' recommended for swing trading)
         """
@@ -125,7 +133,9 @@ class SwingScreeningEngine:
             raise ValueError("Screening end date must be later than start date")
 
         rule_to_evaluate = {**rule, **rule['definition']}
-        fetch_start = self._calculate_warmup_start(evaluation_start, rule_to_evaluate)
+        # Anchor warmup to the end of the evaluation window (not the start) so
+        # the fetched candle range depends only on the end date. See #3.
+        fetch_start = self._calculate_warmup_start(evaluation_end, rule_to_evaluate)
         
         # Process tickers with bounded concurrency + retry/backoff.
         semaphore = asyncio.Semaphore(self.max_concurrency)
@@ -244,13 +254,21 @@ class SwingScreeningEngine:
                 }
             
             # Create indicator engine for this symbol
-            indicator_engine = IndicatorEngine(timeframe=self.timeframe)
+            indicator_engine = IndicatorEngine(
+                timeframe=self.timeframe,
+                max_history=self.INDICATOR_HISTORY
+            )
             rule_engine = RuleEngine()
             rule_to_evaluate = {**rule, **rule['definition']}
             indicator_engine.set_required_operands(rule_to_evaluate)
             latest_evaluation_candle = None
-            
-            # Feed all candles to indicator engine
+            open_candle = None  # most recent still-forming (non-final) candle in window
+
+            # Feed only CLOSED (final) candles to the indicator engine so the
+            # signal reflects a completed candle, never a still-forming one. The
+            # forming candle (if any) is evaluated separately below as the
+            # "current condition". This also keeps the signal stable intraday and
+            # reproducible across Latest/Historical runs (see #3, #5).
             for candle in candles:
                 # Convert datetime to Unix timestamp if needed
                 timestamp = candle['timestamp']
@@ -260,12 +278,17 @@ class SwingScreeningEngine:
                 else:
                     candle_dt = datetime.fromtimestamp(timestamp)
 
-                if candle_dt < evaluation_start or candle_dt >= evaluation_end:
-                    in_evaluation_window = False
-                else:
-                    in_evaluation_window = True
+                in_evaluation_window = evaluation_start <= candle_dt < evaluation_end
+
+                if not candle.get('is_final', True):
+                    # Stash the latest in-window forming candle; don't feed it yet.
+                    if in_evaluation_window:
+                        open_candle = candle
+                    continue
+
+                if in_evaluation_window:
                     latest_evaluation_candle = candle
-                
+
                 indicator_engine.update_candle_data(
                     symbol=symbol,
                     open_price=candle['open'],
@@ -286,7 +309,13 @@ class SwingScreeningEngine:
                     'status': 'error',
                     'error_message': 'No data available in selected screening period'
                 }
-            
+
+            # The CandleBuilder leaves the most recently fed bar "forming", so
+            # force-close it. Without this the signal would be evaluated on the
+            # second-to-last candle while reporting the last candle's timestamp
+            # (an off-by-one that made completed signals look misaligned, see #5).
+            indicator_engine.finalize_current_candle(symbol)
+
             # Check if we have enough data for indicators
             if not indicator_engine.is_symbol_ready(symbol):
                 return {
@@ -312,20 +341,58 @@ class SwingScreeningEngine:
                     'error_message': 'Insufficient data for indicators'
                 }
             
-            # Evaluate rule (returns boolean only)
-            signal_triggered = rule_engine.evaluate(
+            # Evaluate rule on the last CLOSED candle -> the signal. The detailed
+            # form also tells us which conditions matched, so the UI can explain
+            # why a ticker passed screening (see #4).
+            detailed = rule_engine.evaluate_detailed(
                 rule_to_evaluate,
                 indicators
             )
-            
+            signal_triggered = detailed['triggered']
+
             # Get signal type from rule definition (default to 'BUY' if not specified)
             signal_type = rule_to_evaluate.get('signal_type', 'BUY') if signal_triggered else None
-            
+
+            # Current condition: re-evaluate including the still-forming candle so
+            # the UI can distinguish a completed signal ("generated at") from the
+            # live bar state ("current condition"). None when no forming candle.
+            current_condition = None
+            current_timestamp = None
+            current_price = None
+            if open_candle is not None:
+                open_ts = open_candle['timestamp']
+                open_ts_unix = open_ts.timestamp() if isinstance(open_ts, datetime) else open_ts
+                indicator_engine.update_candle_data(
+                    symbol=symbol,
+                    open_price=open_candle['open'],
+                    high=open_candle['high'],
+                    low=open_candle['low'],
+                    close=open_candle['close'],
+                    timestamp=open_ts_unix,
+                    volume=open_candle.get('volume', 0)
+                )
+                # Force-close the forming candle so its own values are reflected.
+                indicator_engine.finalize_current_candle(symbol)
+                open_indicators = indicator_engine.get_indicators(symbol)
+                if open_indicators:
+                    current_condition = rule_engine.evaluate(rule_to_evaluate, open_indicators)
+                    current_timestamp = open_candle['timestamp']
+                    current_price = open_candle['close']
+
             return {
                 'symbol': symbol,
                 'signal': signal_type if signal_triggered else None,
                 'price': latest_evaluation_candle['close'],
                 'timestamp': latest_evaluation_candle['timestamp'],
+                'signal_timestamp': latest_evaluation_candle['timestamp'],
+                'evaluated_final': True,
+                'has_open_candle': open_candle is not None,
+                'current_condition': current_condition,
+                'current_timestamp': current_timestamp,
+                'current_price': current_price,
+                'matched_conditions': detailed['matched'],
+                'total_conditions': detailed['total'],
+                'conditions_detail': detailed['conditions'],
                 'indicators': indicators,
                 'status': 'success',
                 'error_message': None
@@ -386,16 +453,32 @@ class SwingScreeningEngine:
             end_date=end_date
         )
 
-    def _calculate_warmup_start(self, evaluation_start: datetime, rule: Dict[str, Any]) -> datetime:
-        """Fetch extra candles before the evaluation period so indicators are ready."""
-        warmup_bars = RuleEngine.estimate_rule_warmup(rule)
+    def _calculate_warmup_start(self, evaluation_end: datetime, rule: Dict[str, Any]) -> datetime:
+        """Compute how far back to fetch candles so screening is reproducible.
+
+        The start of the fetch window is derived purely from ``evaluation_end``
+        (the end of the screening period), never from the evaluation start or
+        lookback length. Combined with fetching enough candles to fully saturate
+        the IndicatorEngine deque (``INDICATOR_HISTORY``), this guarantees that
+        two runs ending on the same date see the identical trailing candle window
+        and therefore compute identical indicators and signals — regardless of
+        whether the caller used Latest (lookback) or Historical (start/end) mode.
+        See #3.
+        """
+        rule_warmup_bars = RuleEngine.estimate_rule_warmup(rule)
+        # Feed at least a full deque of candles (plus the rule's own warmup and a
+        # safety buffer) so recursive indicators (EMA/RSI/ADX) are fully converged
+        # and the trailing window is identical across window widths.
+        target_bars = max(rule_warmup_bars, self.INDICATOR_HISTORY) + 20
+        # Convert the required number of *trading* candles into a calendar span,
+        # padding for weekends/holidays so the fetch reliably covers target_bars.
         if self.timeframe == '1d':
-            warmup_days = (warmup_bars * 2) + 10
+            warmup_days = int(target_bars * 1.6) + 10
         elif self.timeframe == '4h':
-            warmup_days = max(30, warmup_bars // 2 + 14)
-        else:
-            warmup_days = max(14, warmup_bars // 4 + 7)
-        return evaluation_start - timedelta(days=warmup_days)
+            warmup_days = int(target_bars / 1.5) + 14
+        else:  # '1h'
+            warmup_days = int(target_bars / 6) + 7
+        return evaluation_end - timedelta(days=warmup_days)
     
     def get_supported_timeframes(self) -> List[str]:
         """

@@ -274,6 +274,27 @@ class IndicatorEngine:
             
             return False
     
+    def finalize_current_candle(self, symbol: str, suppress_warnings: bool = True) -> bool:
+        """Promote the builder's forming candle into indicators and recompute.
+
+        Feeding already-closed historical bars leaves the last bar forming in the
+        CandleBuilder (see CandleBuilder.finalize_candle), so its values never
+        reach the indicators. Callers that want the most recent closed bar to be
+        reflected in the indicators (swing screening) call this after feeding.
+        Returns True if a candle was finalized. Live streaming does not use this.
+        """
+        with self.lock:
+            if symbol not in self.candle_data:
+                return False
+            completed_candle = self.candle_builder.finalize_candle(symbol)
+            if not completed_candle:
+                return False
+            if symbol in self.indicators and self.indicators[symbol]:
+                self.prev_indicators[symbol] = self.indicators[symbol].copy()
+            self.candle_data[symbol].append(completed_candle)
+            self._calculate_indicators_for_symbol(symbol, suppress_warnings=suppress_warnings)
+            return True
+
     def update_price_data(self, symbol: str, price: float, timestamp: Optional[float] = None) -> None:
         """
         Add new price data for a symbol (backward compatibility).
