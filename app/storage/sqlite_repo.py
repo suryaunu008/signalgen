@@ -259,6 +259,21 @@ class SQLiteRepository:
         """Parse stored UTC-naive ISO timestamp values back to datetime objects."""
         return datetime.fromisoformat(value)
 
+    @staticmethod
+    def _stamp_utc_iso(value: Any) -> Optional[str]:
+        """Tag a stored UTC-naive timestamp with an explicit UTC offset.
+
+        Timestamps in ``price_candles`` are UTC-naive by convention. Emit them
+        with a ``+00:00`` marker so browsers parse them as UTC and render in the
+        viewer's local timezone instead of assuming the naive value is local.
+        """
+        if not value:
+            return None
+        dt = datetime.fromisoformat(str(value).replace(' ', 'T').replace('Z', '+00:00'))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+
     def get_cached_candles(
         self,
         symbol: str,
@@ -1089,7 +1104,7 @@ class SQLiteRepository:
                 'symbol_count': row['symbol_count'] or 0,
                 'earliest': row['earliest'],
                 'latest': row['latest'],
-                'last_updated': row['last_updated'],
+                'last_updated': self._stamp_utc_iso(row['last_updated']),
                 'sources': [],
             }
 
@@ -1108,7 +1123,7 @@ class SQLiteRepository:
                     'data_source': src['data_source'],
                     'symbols': src['symbols'],
                     'candles': src['candles'],
-                    'last_updated': src['last_updated'],
+                    'last_updated': self._stamp_utc_iso(src['last_updated']),
                 })
 
             return summary
