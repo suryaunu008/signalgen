@@ -1620,12 +1620,14 @@ class SignalGenApp:
                                 "avg_pl_pct": 0
                             }
                         by_symbol[symbol]["trades"] += 1
-                        final_step = row.get("steps", {}).get(final_label)
-                        if not final_step or final_step.get("pl") is None:
+                        # Use the same realized-exit P/L as the headline metrics (item consistency),
+                        # not the fixed final-horizon step, so the two win rates agree per symbol.
+                        realized_step = row.get("steps", {}).get("REALIZED")
+                        if not realized_step or realized_step.get("pl") is None:
                             continue
                         by_symbol[symbol]["evaluated"] += 1
-                        pl = float(final_step["pl"])
-                        pl_pct = float(final_step["pl_pct"])
+                        pl = float(realized_step["pl"])
+                        pl_pct = float(realized_step["pl_pct"])
                         by_symbol[symbol]["wins"] += 1 if pl > 0 else 0
                         by_symbol[symbol]["losses"] += 1 if pl < 0 else 0
                         by_symbol[symbol]["total_pl"] += pl
@@ -1674,12 +1676,11 @@ class SignalGenApp:
                         data_source_name='yahoo'
                     )
 
-                # Resolve symbols
+                # Resolve symbols (rule mode requires explicit tickers; no fallback to the
+                # live-trading active watchlist, since backtests must stay independent of it)
                 symbols = [s.upper().strip() for s in (request.symbols or []) if s and s.strip()]
                 if request.mode == "rule" and not symbols:
-                    symbols = self.repository.get_active_symbols()
-                if request.mode == "rule" and not symbols:
-                    raise ValueError("No symbols provided and no active watchlist found")
+                    raise ValueError("Rule mode requires at least one ticker symbol")
 
                 entries = []
                 candle_cache: Dict[str, List[Dict[str, Any]]] = {}

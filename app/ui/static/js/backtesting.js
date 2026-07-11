@@ -490,14 +490,16 @@ class BacktestingUI {
           this.showError('Rule mode requires: rule, start, end');
           return;
         }
+        const symbolsList = symbolsRaw.split(',').map((s) => s.trim()).filter(Boolean);
+        if (symbolsList.length === 0) {
+          this.showError('Rule mode requires at least one ticker symbol');
+          return;
+        }
 
         payload.rule_id = parseInt(ruleId, 10);
         payload.start_at = this.localInputToIso(startAt);
         payload.end_at = this.localInputToIso(endAt);
-
-        if (symbolsRaw) {
-          payload.symbols = symbolsRaw.split(',').map((s) => s.trim()).filter(Boolean);
-        }
+        payload.symbols = symbolsList;
       } else {
         const manualRaw = document.getElementById('backtest-manual-entries')?.value || '';
         payload.manual_entries = this.parseManualEntries(manualRaw);
@@ -778,7 +780,7 @@ class BacktestingUI {
     }).join('');
     return `
       <div class="mb-4">
-        <div class="mb-2 text-sm font-semibold text-slate-700">By Symbol <span class="text-xs font-normal text-slate-400">(final horizon, price P/L)</span></div>
+        <div class="mb-2 text-sm font-semibold text-slate-700">By Symbol <span class="text-xs font-normal text-slate-400">(realized exit, price P/L)</span></div>
         <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
           <table class="min-w-full">
             <thead>
