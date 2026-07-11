@@ -210,6 +210,22 @@ class BacktestingUI {
     }
   }
 
+  async clearAllHistory() {
+    if (!window.confirm('Clear all saved backtest runs? This cannot be undone.')) return;
+    try {
+      const res = await fetch('/api/backtest/screen/runs', { method: 'DELETE' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Clear failed');
+      }
+      const result = await res.json().catch(() => ({}));
+      this.showSuccess(`Cleared ${result.deleted || 0} saved run(s)`);
+      this.loadHistory();
+    } catch (err) {
+      this.showError(`Clear failed: ${err.message}`);
+    }
+  }
+
   ruleName(ruleId) {
     const name = this.rulesById && this.rulesById[ruleId];
     return name || `Rule #${ruleId}`;

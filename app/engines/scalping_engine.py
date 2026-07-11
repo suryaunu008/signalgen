@@ -28,6 +28,7 @@ Typical Usage:
 
 import asyncio
 import logging
+import math
 import random
 import time
 from typing import Dict, List, Optional, Callable
@@ -83,6 +84,11 @@ class ScalpingEngine:
         self.real_time_bars: Dict[str, object] = {}  # symbol -> RealTimeBars object mapping
         self.market_data_type = 1  # 1=live, 3=delayed
         self._delayed_market_data_requested = False
+
+        # Demo mode (no IBKR): feeds synthetic candles through the real pipeline
+        self.demo_mode = False
+        self._demo_task: Optional[asyncio.Task] = None
+        self._demo_state: Dict[str, Dict] = {}  # symbol -> generator state
         
         # Per-symbol cooldown tracking
         self.symbol_cooldowns: Dict[str, float] = {}  # symbol -> cooldown_end_time mapping
@@ -719,8 +725,255 @@ class ScalpingEngine:
         
         return True
     
+    # ============================================================
+    # DEMO MODE (no IBKR) - synthetic data through the real pipeline
+    # ============================================================
+
+    async def start_demo_engine(self, watchlist: List[str], rule_id: int) -> bool:
+        """
+        Start the engine in DEMO mode: generate synthetic candles locally and
+        push them through the exact same IndicatorEngine -> RuleEngine ->
+        signal path used by live trading. No IBKR connection is required.
+
+        Used to demonstrate the application end-to-end (and guarantee that
+        signals are actually produced) without market data access.
+
+        Args:
+            watchlist: List of symbols to simulate
+            rule_id: ID of the rule to use for signal generation
+
+        Returns:
+            bool: True if the demo engine started successfully
+        """
+        if self.is_running:
+            self.logger.warning("Engine is already running")
+            return False
+
+        if not watchlist:
+            self.logger.error("Cannot start demo engine with an empty watchlist")
+            return False
+
+        # Capture the event loop this coroutine runs on (used for broadcasts)
+        try:
+            self.event_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.event_loop = asyncio.get_event_loop()
+
+        self.demo_mode = True
+        self.is_running = True
+        self.is_connected = True  # "connected" to the simulated feed
+        self.reconnect_enabled = False
+        self.symbol_cooldowns.clear()
+        self._demo_state.clear()
+
+        # Configure the active rule (also narrows indicator computation)
+        if not await self.set_active_rule(rule_id):
+            self.demo_mode = False
+            self.is_running = False
+            self.is_connected = False
+            return False
+
+        rule_to_evaluate = self.active_rule or {}
+        if 'definition' in rule_to_evaluate and isinstance(rule_to_evaluate['definition'], dict):
+            rule_to_evaluate = {**rule_to_evaluate, **rule_to_evaluate['definition']}
+
+        # Seed each symbol with warmup history so indicators are ready and a
+        # signal can fire within the first few live candles.
+        warmup = max(RuleEngine.estimate_rule_warmup(rule_to_evaluate) + 10, 80)
+        tf_seconds = self.indicator_engine.candle_builder.get_timeframe_seconds()
+
+        self.active_watchlist = []
+        for idx, symbol in enumerate(watchlist):
+            self.indicator_engine.initialize_symbol(symbol)
+            self._seed_demo_symbol(symbol, idx, warmup, tf_seconds)
+            self.active_watchlist.append(symbol)
+            # Push an initial price so the UI table populates immediately
+            state = self._demo_state[symbol]
+            await self.broadcaster.broadcast_price_update(
+                symbol, state['prev_close'], state['timestamp']
+            )
+
+        # Broadcast running status (flagged as demo)
+        try:
+            self.broadcaster.broadcast_engine_status_sync(self._demo_status(running=True))
+        except Exception as e:
+            self.logger.error(f"Error broadcasting demo engine status: {e}")
+
+        # Kick off the synthetic feed loop
+        self._demo_task = asyncio.ensure_future(self._run_demo_feed())
+        self.logger.info(
+            f"DEMO engine started with {len(self.active_watchlist)} symbols, "
+            f"rule: {self.active_rule.get('name', rule_id)}"
+        )
+        return True
+
+    def _demo_status(self, running: bool) -> Dict:
+        """Build an engine-status payload for demo-mode broadcasts."""
+        return {
+            'is_running': running,
+            'is_connected': running,
+            'ibkr_connected': running,
+            'demo_mode': running,
+            'state': {'state': 'running' if running else 'stopped'},
+            'active_watchlist': self.active_watchlist.copy() if running else [],
+            'active_rule': self.active_rule if running else None,
+            'subscribed_symbols': self.active_watchlist.copy() if running else [],
+            'reconnect_enabled': False,
+            'reconnect_attempts': 0,
+            'market_data_type': 'demo',
+            'connection_details': {'mode': 'demo'} if running else {},
+        }
+
+    def _seed_demo_symbol(self, symbol: str, index: int, warmup: int, tf_seconds: int) -> None:
+        """
+        Create a synthetic price generator for a symbol and feed it ``warmup``
+        historical candles so indicators start warm.
+
+        The price follows a gentle sine oscillation (plus noise). The rising
+        half of each cycle reliably drives EMA(short) above EMA(long) with RSI
+        in a healthy band, which is exactly what the default scalping rules look
+        for - so signals are produced deterministically, not by luck.
+        """
+        # Deterministic-ish base price per symbol (kept in a realistic range)
+        base = 80.0 + (abs(hash(symbol)) % 320)  # ~80..400
+        period = 30  # candles per oscillation
+
+        # Phase the generator so the FIRST live candle (i = warmup + 1) lands at
+        # the start of the rising half of the cycle - that's where EMA(short)
+        # crosses above EMA(long) with RSI in a healthy band, so the first
+        # signal appears within a few live candles. Stagger symbols so their
+        # signals don't all fire on the exact same tick.
+        phase_offset = -2 * math.pi * (warmup + 1) / period + (index * math.pi / 4.0)
+
+        state = {
+            'base': base,
+            'i': 0,
+            'period': period,
+            'amplitude': 0.06,                  # +/-6% swing
+            'phase_offset': phase_offset,
+            'timestamp': time.time() - (warmup + 1) * tf_seconds,
+            'tf': tf_seconds,
+            'prev_close': base,
+        }
+        self._demo_state[symbol] = state
+
+        seed_candles = [self._next_demo_candle(state) for _ in range(warmup)]
+        self.indicator_engine.bulk_update_candle_data(symbol, seed_candles)
+
+    def _next_demo_candle(self, state: Dict) -> Dict:
+        """Advance a symbol's generator by one candle and return OHLCV data."""
+        state['i'] += 1
+        phase = state['phase_offset'] + (2 * math.pi * state['i'] / state['period'])
+        mid = state['base'] * (1 + state['amplitude'] * math.sin(phase))
+        mid += random.uniform(-0.003, 0.003) * state['base']  # small noise
+        close = max(mid, 0.01)
+
+        open_price = state['prev_close']
+        high = max(open_price, close) * (1 + random.uniform(0.0, 0.0015))
+        low = min(open_price, close) * (1 - random.uniform(0.0, 0.0015))
+        volume = random.randint(1000, 5000)
+
+        state['timestamp'] += state['tf']
+        state['prev_close'] = close
+        return {
+            'open': open_price,
+            'high': high,
+            'low': low,
+            'close': close,
+            'volume': volume,
+            'timestamp': state['timestamp'],
+        }
+
+    async def _run_demo_feed(self) -> None:
+        """
+        Continuously generate one candle per symbol on a short real-time cadence,
+        pushing each through the indicator engine and evaluating the active rule -
+        mirroring the live ``_on_bar_update`` logic.
+        """
+        interval = 0.6  # real seconds between generated candles
+        try:
+            while self.is_running and self.demo_mode:
+                for symbol in list(self.active_watchlist):
+                    state = self._demo_state.get(symbol)
+                    if not state:
+                        continue
+
+                    candle = self._next_demo_candle(state)
+                    try:
+                        self.indicator_engine.update_candle_data(
+                            symbol=symbol,
+                            open_price=candle['open'],
+                            high=candle['high'],
+                            low=candle['low'],
+                            close=candle['close'],
+                            timestamp=candle['timestamp'],
+                            volume=candle['volume'],
+                            suppress_warnings=True,
+                        )
+                    except ValueError as e:
+                        self.logger.warning(f"Demo candle rejected for {symbol}: {e}")
+                        continue
+
+                    await self.broadcaster.broadcast_price_update(
+                        symbol, candle['close'], candle['timestamp']
+                    )
+
+                    if not self.indicator_engine.is_symbol_ready(symbol):
+                        continue
+
+                    if self._can_generate_signal_for_symbol(symbol) and self.active_rule:
+                        try:
+                            indicators = self.indicator_engine.get_indicators(symbol)
+                            rule_to_evaluate = self.active_rule
+                            if 'definition' in self.active_rule and isinstance(self.active_rule['definition'], dict):
+                                rule_to_evaluate = {**self.active_rule, **self.active_rule['definition']}
+
+                            if self.rule_engine.evaluate(rule_to_evaluate, indicators):
+                                signal_price = indicators.get('PRICE', candle['close'])
+                                self._generate_signal(symbol, signal_price, candle['timestamp'], indicators)
+                        except Exception as e:
+                            self.logger.error(f"Error evaluating demo rule for {symbol}: {e}")
+
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            self.logger.info("Demo feed cancelled")
+            raise
+        except Exception as e:
+            self.logger.error(f"Error in demo feed loop: {e}")
+
+    async def _stop_demo_engine(self) -> None:
+        """Stop the demo feed and reset state (no IBKR involved)."""
+        self.logger.info("Stopping demo engine...")
+        self.is_running = False
+        self.demo_mode = False
+
+        if self._demo_task and not self._demo_task.done():
+            self._demo_task.cancel()
+            try:
+                await self._demo_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._demo_task = None
+
+        self.symbol_cooldowns.clear()
+        for symbol in self.active_watchlist:
+            self.indicator_engine.clear_symbol_data(symbol)
+        self.active_watchlist.clear()
+        self._demo_state.clear()
+        self.is_connected = False
+
+        try:
+            self.broadcaster.broadcast_engine_status_sync(self._demo_status(running=False))
+        except Exception as e:
+            self.logger.error(f"Error broadcasting demo stopped status: {e}")
+
+        self.logger.info("Demo engine stopped")
+
     async def stop_engine(self) -> None:
         """Stop the scalping engine and cleanup resources."""
+        if self.demo_mode:
+            await self._stop_demo_engine()
+            return
         await self.stop()
     
     async def _subscribe_to_market_data(self) -> None:
@@ -1011,6 +1264,7 @@ class ScalpingEngine:
             'is_running': self.is_running,
             'is_connected': self.is_connected,
             'ibkr_connected': self.is_connected,  # Add field for EngineStatus model compatibility
+            'demo_mode': self.demo_mode,
             'state': self.state_machine.get_state_info(),
             'active_watchlist': self.active_watchlist.copy(),
             'active_rule': self.active_rule,
@@ -1038,18 +1292,24 @@ class ScalpingEngine:
                 'is_running': self.is_running,
                 'is_connected': self.is_connected,
                 'ibkr_connected': self.is_connected,
+                'demo_mode': self.demo_mode,
                 'state': self.state_machine.get_state_info(),
                 'active_watchlist': self.active_watchlist.copy(),
                 'active_rule': self.active_rule,
-                'subscribed_symbols': list(self.subscribed_contracts.keys()),
+                'subscribed_symbols': (
+                    self.active_watchlist.copy() if self.demo_mode
+                    else list(self.subscribed_contracts.keys())
+                ),
                 'reconnect_enabled': self.reconnect_enabled,
                 'reconnect_attempts': self.reconnect_attempts,
-                'connection_details': {
-                    'host': self.ib_host,
-                    'port': self.ib_port,
-                    'client_id': self.ib_client_id
-                },
-                'market_data_type': 'delayed' if self.market_data_type == 3 else 'live',
+                'connection_details': (
+                    {'mode': 'demo'} if self.demo_mode else {
+                        'host': self.ib_host,
+                        'port': self.ib_port,
+                        'client_id': self.ib_client_id
+                    }
+                ),
+                'market_data_type': 'demo' if self.demo_mode else ('delayed' if self.market_data_type == 3 else 'live'),
                 'indicator_engine_status': {}  # Skip for now to avoid blocking
             }
         except Exception as e:

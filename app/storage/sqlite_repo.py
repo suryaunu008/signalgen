@@ -816,7 +816,20 @@ class SQLiteRepository:
             cursor.execute('DELETE FROM signals WHERE id = ?', (signal_id,))
             conn.commit()
             return cursor.rowcount > 0
-    
+
+    def delete_all_signals(self) -> int:
+        """
+        Delete all live signals.
+
+        Returns:
+            int: Number of signals deleted
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM signals')
+            conn.commit()
+            return cursor.rowcount
+
     # Settings operations
     def get_setting(self, key: str, default: Any = None) -> Any:
         """
@@ -1337,6 +1350,14 @@ class SQLiteRepository:
             cursor.execute('DELETE FROM backtest_screen_runs WHERE id = ?', (run_id,))
             conn.commit()
             return cursor.rowcount > 0
+
+    def delete_all_backtest_screen_runs(self) -> int:
+        """Delete all backtest screen runs. Returns the number of rows removed."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM backtest_screen_runs')
+            conn.commit()
+            return cursor.rowcount
 
     # Ticker Universe operations
     def create_ticker_universe(

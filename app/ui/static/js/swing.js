@@ -102,14 +102,7 @@ class SwingTradingUI {
       universeModalCloseBtn.addEventListener('click', () => this.hideUniverseForm());
     }
 
-    const universeFormContainer = document.getElementById('universe-form-container');
-    if (universeFormContainer) {
-      universeFormContainer.addEventListener('click', (event) => {
-        if (event.target === universeFormContainer) {
-          this.hideUniverseForm();
-        }
-      });
-    }
+    // Backdrop click intentionally does NOT close the universe form. Use Cancel/✕.
 
     const universeList = document.getElementById('universe-list');
     if (universeList) {
@@ -147,12 +140,9 @@ class SwingTradingUI {
     const closeChartButton = document.getElementById('close-swing-chart-modal');
     if (closeChartButton) closeChartButton.addEventListener('click', () => this.closeChartModal());
 
-    const chartModal = document.getElementById('swing-chart-modal');
-    if (chartModal) {
-      chartModal.addEventListener('click', (event) => {
-        if (event.target.id === 'swing-chart-modal') this.closeChartModal();
-      });
-    }
+    // Backdrop click intentionally does NOT close the chart modal (prevents
+    // accidental close when a drag started inside is released on the backdrop).
+    // Use the ✕ button to close.
 
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && !document.getElementById('universe-form-container')?.classList.contains('hidden')) {

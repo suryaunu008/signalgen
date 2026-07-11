@@ -185,7 +185,7 @@ class TelegramNotifier:
             
             # Build message
             message_lines = [
-                f"{emoji} *SIGNAL TRADING ALERT*",
+                f"{emoji} *LIVE SIGNAL ALERT*",
                 "",
                 f"*Symbol:* `{symbol}`",
                 f"*Type:* *{signal_type.upper()}*",
@@ -193,26 +193,6 @@ class TelegramNotifier:
                 f"*Time:* {self._format_timestamp(timestamp)}",
                 f"*Rule:* {rule_name}",
             ]
-            
-            # Add ALL indicators if available
-            if indicators:
-                message_lines.append("")
-                message_lines.append("*📊 Indicators:*")
-                
-                # Sort indicators alphabetically for consistent display
-                sorted_indicators = sorted(indicators.items())
-                
-                for key, value in sorted_indicators:
-                    if value is not None:
-                        # Format value based on type
-                        if isinstance(value, (int, float)):
-                            formatted_value = f"{float(value):.4f}"
-                        else:
-                            formatted_value = str(value)
-                        
-                        # Format display name (convert snake_case to readable format)
-                        display_name = key.replace('_', ' ').upper()
-                        message_lines.append(f"  • {display_name}: `{formatted_value}`")
             
             # Add footer
             message_lines.append("")

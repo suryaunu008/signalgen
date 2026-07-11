@@ -107,6 +107,7 @@ class EngineStart(BaseModel):
     """Model for starting the engine."""
     watchlist_id: int = Field(..., gt=0)
     rule_id: int = Field(..., gt=0)
+    demo: bool = Field(default=False, description="Run in demo mode (synthetic data, no IBKR)")
 
 class EngineStatus(BaseModel):
     """Model for engine status response."""
@@ -931,7 +932,7 @@ class SignalGenApp:
                     # Start engine in separate thread with event loop
                     engine_thread = threading.Thread(
                         target=self._start_engine_in_thread,
-                        args=(watchlist['symbols'], engine_config.rule_id),
+                        args=(watchlist['symbols'], engine_config.rule_id, engine_config.demo),
                         daemon=True
                     )
                     engine_thread.start()
@@ -1008,6 +1009,16 @@ class SignalGenApp:
                 self.logger.error(f"Error getting signals: {e}")
                 raise HTTPException(status_code=500, detail="Internal server error")
         
+        @self.app.delete("/api/signals")
+        def delete_all_signals():
+            """Delete all live signals (clear history)."""
+            try:
+                deleted = self.repository.delete_all_signals()
+                return {"message": "All signals cleared", "deleted": deleted}
+            except Exception as e:
+                self.logger.error(f"Error clearing signals: {e}")
+                raise HTTPException(status_code=500, detail="Internal server error")
+
         @self.app.delete("/api/signals/{signal_id}")
         def delete_signal(signal_id: int):
             """Delete a signal."""
@@ -2080,6 +2091,19 @@ class SignalGenApp:
                 )
             return run
 
+        @self.app.delete("/api/backtest/screen/runs")
+        def delete_all_backtest_screen_runs():
+            """Delete all persisted backtest screen runs (clear history)."""
+            try:
+                deleted = self.repository.delete_all_backtest_screen_runs()
+                return {"message": "All backtest runs cleared", "deleted": deleted}
+            except Exception as e:
+                self.logger.error(f"Error clearing backtest screen runs: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error"
+                )
+
         @self.app.delete("/api/backtest/screen/runs/{run_id}")
         def delete_backtest_screen_run(run_id: int):
             """Delete a persisted backtest screen run."""
@@ -2913,25 +2937,26 @@ class SignalGenApp:
                     detail="Internal server error"
                 )
 
-    def _start_engine_in_thread(self, symbols: List[str], rule_id: int) -> None:
+    def _start_engine_in_thread(self, symbols: List[str], rule_id: int, demo: bool = False) -> None:
         """
         Start engine in separate thread with its own event loop.
         This is needed for ib_insync which requires an event loop.
-        
+
         Args:
             symbols: List of symbols to monitor
             rule_id: Rule ID to use
+            demo: If True, run in demo mode (synthetic data, no IBKR)
         """
         # Create new event loop for this thread
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        
+
         # Store loop reference for stopping later
         self._engine_loop = loop
-        
+
         try:
             # Start the engine
-            loop.run_until_complete(self._start_engine_async(symbols, rule_id))
+            loop.run_until_complete(self._start_engine_async(symbols, rule_id, demo))
             
             # CRITICAL: Keep the loop running to process IBKR events
             # The loop must stay alive to receive real-time updates
@@ -2987,21 +3012,25 @@ class SignalGenApp:
         except Exception as e:
             self.logger.error(f"Error stopping engine: {e}")
     
-    async def _start_engine_async(self, symbols: List[str], rule_id: int) -> None:
+    async def _start_engine_async(self, symbols: List[str], rule_id: int, demo: bool = False) -> None:
         """
         Async method to start the engine.
-        
+
         Args:
             symbols: List of symbols to monitor
             rule_id: Rule ID to use
+            demo: If True, run in demo mode (synthetic data, no IBKR)
         """
         try:
             with self._engine_lock:
                 self._engine_running = True
                 self._engine_start_time = datetime.utcnow()
-                
-            success = await self.scalping_engine.start_engine(symbols, rule_id)
-            self.logger.info(f"Engine start_engine returned: {success}")
+
+            if demo:
+                success = await self.scalping_engine.start_demo_engine(symbols, rule_id)
+            else:
+                success = await self.scalping_engine.start_engine(symbols, rule_id)
+            self.logger.info(f"Engine start_engine returned: {success} (demo={demo})")
             
             if success:
                 self.logger.info(f"Engine started successfully with {len(symbols)} symbols")
@@ -3080,6 +3109,7 @@ class SignalGenApp:
                 'is_running': self._engine_running,
                 'is_connected': self.scalping_engine.is_connected,
                 'ibkr_connected': self.scalping_engine.is_connected,
+                'demo_mode': self.scalping_engine.demo_mode,
                 'state': {'state': 'running' if self._engine_running else 'stopped'},
                 'active_watchlist': self.scalping_engine.active_watchlist.copy() if hasattr(self.scalping_engine, 'active_watchlist') else [],
                 'active_rule': self.scalping_engine.active_rule if hasattr(self.scalping_engine, 'active_rule') else None,

@@ -960,14 +960,9 @@ class SignalGenApp {
       });
     }
 
-    const viewHelpModal = document.getElementById("view-help-modal");
-    if (viewHelpModal) {
-      viewHelpModal.addEventListener("click", (event) => {
-        if (event.target === viewHelpModal) {
-          closeViewHelp();
-        }
-      });
-    }
+    // Backdrop click intentionally does NOT close modals (prevents accidental
+    // close when a drag/select starts inside and the pointer is released outside).
+    // Use the ✕ button or Escape to close.
 
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
@@ -981,22 +976,23 @@ class SignalGenApp {
       closeLogsButton.addEventListener("click", closeLogsModal);
     }
 
-    const logsModal = document.getElementById("logs-modal");
-    if (logsModal) {
-      logsModal.addEventListener("click", (event) => {
-        if (event.target === logsModal) {
-          closeLogsModal();
-        }
-      });
-    }
+    // Backdrop click intentionally does NOT close the logs modal.
 
     // Engine controls
     document
       .getElementById("start-engine")
       .addEventListener("click", () => this.startEngine());
+    const startDemoBtn = document.getElementById("start-demo");
+    if (startDemoBtn) {
+      startDemoBtn.addEventListener("click", () => this.startEngine(true));
+    }
     document
       .getElementById("stop-engine")
       .addEventListener("click", () => this.stopEngine());
+    const clearSignalsBtn = document.getElementById("clear-signals");
+    if (clearSignalsBtn) {
+      clearSignalsBtn.addEventListener("click", () => this.clearAllSignals());
+    }
 
     // Timeframe selector
     document
@@ -1069,14 +1065,7 @@ class SignalGenApp {
         this.closeRuleModal();
       });
 
-    // Close rule modal when clicking outside
-    document
-      .getElementById("rule-detail-modal")
-      .addEventListener("click", (e) => {
-        if (e.target.id === "rule-detail-modal") {
-          this.closeRuleModal();
-        }
-      });
+    // Backdrop click intentionally does NOT close the rule modal.
 
     // Signal modal close button event listener
     document
@@ -1085,14 +1074,7 @@ class SignalGenApp {
         this.closeSignalModal();
       });
 
-    // Close signal modal when clicking outside
-    document
-      .getElementById("signal-detail-modal")
-      .addEventListener("click", (e) => {
-        if (e.target.id === "signal-detail-modal") {
-          this.closeSignalModal();
-        }
-      });
+    // Backdrop click intentionally does NOT close the signal modal.
   }
 
   /**
@@ -1231,7 +1213,9 @@ class SignalGenApp {
 
     if (status.is_running) {
       indicator.className = "w-3 h-3 bg-green-500 rounded-full animate-pulse";
-      text.textContent = "Engine: Running";
+      text.textContent = status.demo_mode
+        ? "Engine: Running (Demo)"
+        : "Engine: Running";
     } else {
       indicator.className = "w-3 h-3 bg-red-500 rounded-full";
       text.textContent = "Engine: Stopped";
@@ -1249,7 +1233,12 @@ class SignalGenApp {
 
     console.log("DEBUG: IBKR connected status:", ibkrConnected);
 
-    if (ibkrConnected) {
+    if (status.is_running && status.demo_mode) {
+      // Demo mode does not use IBKR - show a neutral simulated-feed state
+      ibkrIndicator.className =
+        "w-3 h-3 bg-purple-500 rounded-full animate-pulse";
+      ibkrText.textContent = "Simulated Feed (Demo)";
+    } else if (ibkrConnected) {
       ibkrIndicator.className =
         "w-3 h-3 bg-green-500 rounded-full animate-pulse";
       ibkrText.textContent = "IBKR: Connected";
@@ -1272,13 +1261,27 @@ class SignalGenApp {
 
     // Update control buttons
     const startBtn = document.getElementById("start-engine");
+    const startDemoBtn = document.getElementById("start-demo");
     const stopBtn = document.getElementById("stop-engine");
+    const demoBadge = document.getElementById("demo-badge");
     const timeframeSelect = document.getElementById("timeframe-select");
     const watchlistSelect = document.getElementById("watchlist-select");
     const ruleSelect = document.getElementById("rule-select");
 
     startBtn.disabled = status.is_running;
+    if (startDemoBtn) startDemoBtn.disabled = status.is_running;
     stopBtn.disabled = !status.is_running;
+
+    // Show DEMO badge while a demo run is active
+    if (demoBadge) {
+      if (status.is_running && status.demo_mode) {
+        demoBadge.classList.remove("hidden");
+        demoBadge.classList.add("inline-flex");
+      } else {
+        demoBadge.classList.add("hidden");
+        demoBadge.classList.remove("inline-flex");
+      }
+    }
     
     // Disable timeframe, watchlist, and rule selectors when engine is running
     if (timeframeSelect) {
@@ -1563,6 +1566,43 @@ class SignalGenApp {
   }
 
   /**
+   * Clear all live signal history
+   */
+  async clearAllSignals() {
+    if (
+      !window.confirm(
+        "Clear all live signal history? This cannot be undone."
+      )
+    ) {
+      return;
+    }
+
+    try {
+      this.showLoading();
+      const result = await API.deleteAllSignals();
+
+      // Reset local state and UI
+      this.signals = [];
+      const container = document.getElementById("signals-container");
+      if (container) {
+        container.innerHTML = `
+          <div class="text-gray-500 text-center py-8">
+            No signals received yet
+          </div>
+        `;
+      }
+
+      const count = (result && result.deleted) || 0;
+      this.showToast(`Cleared ${count} signal(s)`, "success");
+    } catch (error) {
+      console.error("Failed to clear signals:", error);
+      this.showToast(`Failed to clear signals: ${error.message}`, "error");
+    } finally {
+      this.hideLoading();
+    }
+  }
+
+  /**
    * Populate rule select dropdown
    */
   populateRuleSelect(rules) {
@@ -1611,8 +1651,9 @@ class SignalGenApp {
 
   /**
    * Start the engine
+   * @param {boolean} demo - Start in demo mode (simulated data, no IBKR)
    */
-  async startEngine() {
+  async startEngine(demo = false) {
     try {
       const watchlistId = parseInt(
         document.getElementById("watchlist-select").value
@@ -1626,9 +1667,18 @@ class SignalGenApp {
 
       this.showLoading();
 
-      await API.startEngine({ watchlist_id: watchlistId, rule_id: ruleId });
+      await API.startEngine({
+        watchlist_id: watchlistId,
+        rule_id: ruleId,
+        demo: demo,
+      });
 
-      this.showToast("Engine started successfully", "success");
+      this.showToast(
+        demo
+          ? "Demo started - simulated signals will appear shortly"
+          : "Engine started successfully",
+        "success"
+      );
     } catch (error) {
       console.error("Failed to start engine:", error);
       this.showToast(`Failed to start engine: ${error.message}`, "error");
