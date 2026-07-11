@@ -2057,6 +2057,18 @@ class SignalGenApp:
                     detail="Internal server error"
                 )
 
+        @self.app.get("/api/data/summary")
+        def get_data_summary():
+            """Cache coverage summary for the Dashboard (symbols, range, last refresh)."""
+            try:
+                return self.repository.get_price_cache_summary()
+            except Exception as e:
+                self.logger.error(f"Error getting data summary: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to get data summary"
+                )
+
         @self.app.get("/api/backtest/screen/runs/{run_id}")
         async def get_backtest_screen_run(run_id: int):
             """Fetch a single persisted backtest screen run by ID."""
@@ -2067,6 +2079,26 @@ class SignalGenApp:
                     detail=f"Backtest screen run {run_id} not found"
                 )
             return run
+
+        @self.app.delete("/api/backtest/screen/runs/{run_id}")
+        def delete_backtest_screen_run(run_id: int):
+            """Delete a persisted backtest screen run."""
+            try:
+                deleted = self.repository.delete_backtest_screen_run(run_id)
+                if not deleted:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Backtest screen run {run_id} not found"
+                    )
+                return {"message": "Backtest run deleted successfully"}
+            except HTTPException:
+                raise
+            except Exception as e:
+                self.logger.error(f"Error deleting backtest screen run {run_id}: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error"
+                )
 
         @self.app.post("/api/backtest/export-csv")
         async def export_backtest_csv(request: Request):

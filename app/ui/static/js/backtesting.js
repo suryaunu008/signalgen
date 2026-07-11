@@ -22,6 +22,219 @@ class BacktestingUI {
     this.onPositionSizingChange(document.getElementById('backtest-position-sizing')?.value || 'percent_equity');
   }
 
+  // ---------------------------------------------------------------------
+  // History (persisted runs: config + headline summary; not the full table)
+  // Shown in a modal to keep the main view uncluttered.
+  // ---------------------------------------------------------------------
+  openHistoryModal() {
+    const modal = document.getElementById('backtest-history-modal');
+    if (!modal) return;
+    modal.classList.remove('hidden');
+    document.body.classList.add('overflow-hidden');
+    this.loadHistory();
+  }
+
+  closeHistoryModal() {
+    const modal = document.getElementById('backtest-history-modal');
+    if (modal) modal.classList.add('hidden');
+    document.body.classList.remove('overflow-hidden');
+  }
+
+  async loadHistory() {
+    const el = document.getElementById('backtest-history-list');
+    if (!el) return;
+    try {
+      const res = await fetch('/api/backtest/screen/runs?limit=50');
+      if (!res.ok) throw new Error('Failed to load history');
+      const runs = await res.json();
+      this.renderHistory(Array.isArray(runs) ? runs : []);
+    } catch (err) {
+      el.innerHTML = `<p class="text-rose-600">Failed to load history: ${this.escapeHtml(err.message)}</p>`;
+    }
+  }
+
+  renderHistory(runs) {
+    const el = document.getElementById('backtest-history-list');
+    if (!el) return;
+    if (runs.length === 0) {
+      el.innerHTML =
+        '<p class="text-slate-500">No saved runs yet. Run a backtest to see it here.</p>';
+      return;
+    }
+    el.innerHTML = runs.map((run) => this.buildHistoryRowHtml(run)).join('');
+  }
+
+  // Pick the headline metric block consistent with the results view:
+  // realized exits unless the run used a plain holding period.
+  historyHeadline(run) {
+    const summary = run.summary || {};
+    const cfg = run.config || {};
+    const useRealized = cfg.exit_strategy && cfg.exit_strategy !== 'holding_period';
+    return (
+      (useRealized ? summary.realized : summary.final) ||
+      summary.final ||
+      summary.realized ||
+      null
+    );
+  }
+
+  buildHistoryRowHtml(run) {
+    const cfg = run.config || {};
+    const summary = run.summary || {};
+    const m = this.historyHeadline(run) || {};
+    const fmtPct = (v) =>
+      v === null || v === undefined || Number.isNaN(Number(v)) ? '-' : `${Number(v).toFixed(2)}%`;
+    const ret = Number(m.total_return_pct);
+    const retClass = ret > 0 ? 'text-emerald-700' : ret < 0 ? 'text-rose-700' : 'text-slate-600';
+    const entries = summary.total_entries;
+    const exitLabel =
+      { holding_period: 'Holding', target_stop: 'TP/SL', exit_signal: 'Exit Signal' }[
+        cfg.exit_strategy
+      ] || cfg.exit_strategy || '-';
+    const badge = (text, cls = 'bg-slate-100 text-slate-700') =>
+      `<span class="rounded-full ${cls} px-2 py-0.5 text-[11px] font-semibold">${this.escapeHtml(text)}</span>`;
+    return `
+      <div class="rounded-lg border border-slate-200 mb-2">
+        <div class="flex items-center gap-3 p-3">
+          <div class="min-w-0 flex-1">
+            <div class="flex flex-wrap items-center gap-1.5">
+              ${badge(cfg.mode || run.mode || 'run', 'bg-slate-800 text-white')}
+              ${badge('T ' + (cfg.timeframe || run.timeframe || '-'))}
+              ${badge('T+' + (cfg.n_steps != null ? cfg.n_steps : '?'))}
+              ${badge(exitLabel, 'bg-purple-100 text-purple-800')}
+            </div>
+            <div class="mt-1 text-xs text-slate-500">${this.fmtHistoryDate(run.created_at)}</div>
+          </div>
+          <div class="text-right whitespace-nowrap">
+            <div class="text-sm font-bold ${retClass}">${fmtPct(m.total_return_pct)}</div>
+            <div class="text-[11px] text-slate-500">${run.row_count != null ? run.row_count : 0} trades${
+              entries != null ? ` · ${entries} entries` : ''
+            }</div>
+          </div>
+          <div class="flex items-center gap-1">
+            <button type="button" onclick="backtestingUI.toggleHistoryDetail(${run.id})" class="rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50" title="View details"><i class="fas fa-eye"></i></button>
+            <button type="button" onclick="backtestingUI.deleteHistoryRun(${run.id})" class="rounded-md border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-600 hover:bg-rose-50" title="Delete"><i class="fas fa-trash"></i></button>
+          </div>
+        </div>
+        <div id="backtest-history-detail-${run.id}" class="hidden border-t border-slate-100 p-3 bg-slate-50">
+          ${this.buildHistoryDetailHtml(run)}
+        </div>
+      </div>`;
+  }
+
+  buildHistoryDetailHtml(run) {
+    const cfg = run.config || {};
+    const m = this.historyHeadline(run) || {};
+    const fmtPct = (v) =>
+      v === null || v === undefined || Number.isNaN(Number(v)) ? '-' : `${Number(v).toFixed(2)}%`;
+    const fmtCash = (v) =>
+      v === null || v === undefined || Number.isNaN(Number(v))
+        ? '-'
+        : Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 });
+    const fmtNum = (v, d = 2) =>
+      v === null || v === undefined || Number.isNaN(Number(v)) ? '-' : Number(v).toFixed(d);
+
+    const range =
+      cfg.start_at || cfg.end_at
+        ? `${this.fmtHistoryDate(cfg.start_at)} → ${this.fmtHistoryDate(cfg.end_at)}`
+        : '-';
+    const tpsl = [];
+    if (cfg.take_profit_pct != null) tpsl.push(`TP ${cfg.take_profit_pct}%`);
+    if (cfg.stop_loss_pct != null) tpsl.push(`SL ${cfg.stop_loss_pct}%`);
+
+    let exitDetail = tpsl.length ? tpsl.join(' · ') : cfg.exit_strategy || '-';
+    if (cfg.exit_strategy === 'exit_signal' && cfg.exit_rule_id != null) {
+      exitDetail = `Exit Signal · ${this.ruleName(cfg.exit_rule_id)}`;
+    }
+
+    const cfgRows = [
+      ['Rule', cfg.rule_id != null ? this.ruleName(cfg.rule_id) : '—'],
+      ['Data source', cfg.data_source || '-'],
+      ['Range', range],
+      ['Entry / Exit basis', `${cfg.entry_price_basis || '-'} / ${cfg.exit_price_basis || '-'}`],
+      ['Exit strategy', exitDetail],
+      ['Symbols', Array.isArray(cfg.symbols) && cfg.symbols.length ? cfg.symbols.join(', ') : '-'],
+    ];
+
+    const metricCards = [
+      ['Total Return', fmtPct(m.total_return_pct)],
+      ['Net P/L', fmtCash(m.net_pl_cash)],
+      ['Win Rate', fmtPct(m.win_rate)],
+      ['Trades', m.evaluated != null ? String(m.evaluated) : '-'],
+      ['Max Drawdown', fmtPct(m.max_drawdown_pct)],
+      ['Profit Factor', fmtNum(m.profit_factor, 2)],
+    ];
+
+    return `
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-xs mb-3">
+        ${cfgRows
+          .map(
+            ([k, v]) => `
+          <div class="flex justify-between gap-3 border-b border-slate-100 py-1">
+            <span class="text-slate-500">${k}</span>
+            <span class="font-medium text-slate-800 text-right truncate">${this.escapeHtml(v)}</span>
+          </div>`
+          )
+          .join('')}
+      </div>
+      <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+        ${metricCards
+          .map(
+            ([label, value]) => `
+          <div class="rounded-md border border-slate-200 bg-white p-2">
+            <div class="text-[10px] font-semibold uppercase text-slate-500">${label}</div>
+            <div class="mt-0.5 text-sm font-bold text-slate-800">${value}</div>
+          </div>`
+          )
+          .join('')}
+      </div>`;
+  }
+
+  toggleHistoryDetail(runId) {
+    const el = document.getElementById(`backtest-history-detail-${runId}`);
+    if (el) el.classList.toggle('hidden');
+  }
+
+  async deleteHistoryRun(runId) {
+    if (!window.confirm('Delete this saved backtest run?')) return;
+    try {
+      const res = await fetch(`/api/backtest/screen/runs/${runId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Delete failed');
+      }
+      this.showSuccess('Run deleted');
+      this.loadHistory();
+    } catch (err) {
+      this.showError(`Delete failed: ${err.message}`);
+    }
+  }
+
+  ruleName(ruleId) {
+    const name = this.rulesById && this.rulesById[ruleId];
+    return name || `Rule #${ruleId}`;
+  }
+
+  fmtHistoryDate(value) {
+    if (!value) return '-';
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return String(value);
+    return d.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
+  escapeHtml(str) {
+    return String(str == null ? '' : str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
   renderTimezoneLabel() {
     const el = document.getElementById('backtest-timezone-label');
     if (!el) return;
@@ -100,6 +313,10 @@ class BacktestingUI {
       const select = document.getElementById('backtest-rule-select');
       const exitSelect = document.getElementById('backtest-exit-rule-select');
       if (!Array.isArray(rules)) return;
+
+      // Cache id -> name so history (which only stores rule_id) can show names.
+      this.rulesById = {};
+      rules.forEach((rule) => { this.rulesById[rule.id] = rule.name; });
 
       if (select) select.innerHTML = '<option value="">Select rule...</option>';
       if (exitSelect) exitSelect.innerHTML = '<option value="">Select exit rule...</option>';

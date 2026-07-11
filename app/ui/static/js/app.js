@@ -10,11 +10,32 @@ const VIEW_ALIASES = {
   screener: "swing",
 };
 
-let currentView = "scalping";
+let currentView = "dashboard";
 let helpLanguage = "en";
 
 const VIEW_HELP = {
   en: {
+    dashboard: {
+      title: "Dashboard",
+      subtitle: "Your starting point: system status and quick access to the main tools.",
+      sections: [
+        {
+          heading: "What you see",
+          items: [
+            "Connection, cached market data, universe and rule counts at a glance.",
+            "Recent backtests, most recent first.",
+            "Shortcuts to jump straight into the Screener or Backtesting."
+          ]
+        },
+        {
+          heading: "Suggested flow",
+          items: [
+            "Set up Rules and Market Data first, then test with Backtesting or the Screener.",
+            "Go to Realtime Signal last, once your setup is ready for live monitoring."
+          ]
+        }
+      ]
+    },
     scalping: {
       title: "Realtime Signal",
       subtitle: "Use this page to run live monitoring and review incoming signals.",
@@ -142,6 +163,27 @@ const VIEW_HELP = {
     }
   },
   id: {
+    dashboard: {
+      title: "Dashboard",
+      subtitle: "Titik awal: status sistem dan akses cepat ke alat utama.",
+      sections: [
+        {
+          heading: "Yang terlihat",
+          items: [
+            "Koneksi, cache market data, jumlah universe dan rule sekilas.",
+            "Backtest terbaru, terurut dari yang paling baru.",
+            "Pintasan langsung ke Screener atau Backtesting."
+          ]
+        },
+        {
+          heading: "Alur yang disarankan",
+          items: [
+            "Siapkan Rules dan Market Data dulu, lalu uji lewat Backtesting atau Screener.",
+            "Buka Realtime Signal terakhir, saat setup sudah siap untuk live."
+          ]
+        }
+      ]
+    },
     scalping: {
       title: "Realtime Signal",
       subtitle: "Gunakan halaman ini untuk monitoring live dan melihat sinyal masuk.",
@@ -402,7 +444,9 @@ function switchView(viewName) {
   });
   
   // Initialize view-specific UI if needed
-  if (tabName === 'backtesting' && typeof backtestingUI !== 'undefined') {
+  if (tabName === 'dashboard' && typeof dashboardUI !== 'undefined') {
+    dashboardUI.render();
+  } else if (tabName === 'backtesting' && typeof backtestingUI !== 'undefined') {
     backtestingUI.init();
   } else if ((tabName === 'swing' || tabName === 'data') && typeof swingTradingUI !== 'undefined') {
     swingTradingUI.init();
@@ -413,6 +457,190 @@ function switchView(viewName) {
 function switchTab(tabName) {
   switchView(tabName);
 }
+
+// Dashboard (landing view): aggregates status from existing endpoints.
+const dashboardUI = {
+  _loading: false,
+
+  async render() {
+    if (this._loading) return;
+    this._loading = true;
+    try {
+      const [status, rules, universes, dataSummary, backtests] =
+        await Promise.allSettled([
+          API.getSystemStatus(),
+          API.getAllRules(),
+          API.get("/api/swing/universes"),
+          API.get("/api/data/summary"),
+          API.get("/api/backtest/screen/runs", { limit: 5 }),
+        ]);
+
+      this._renderConnection(this._value(status));
+      this._renderRules(this._value(rules));
+      this._renderUniverses(this._value(universes));
+      this._renderData(this._value(dataSummary));
+      this._renderRecentBacktests(this._value(backtests));
+    } catch (err) {
+      console.error("Dashboard render failed:", err);
+    } finally {
+      this._loading = false;
+    }
+  },
+
+  _value(settled) {
+    return settled && settled.status === "fulfilled" ? settled.value : null;
+  },
+
+  _set(id, html) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = html;
+  },
+
+  _renderConnection(status) {
+    const engine = status && status.engine ? status.engine : null;
+    if (!engine) {
+      this._set("dash-connection", '<span class="text-slate-400">Unknown</span>');
+      this._set("dash-connection-sub", "");
+      return;
+    }
+    const connected = !!engine.ibkr_connected;
+    const running = !!engine.is_running;
+    const dot = connected ? "#16a34a" : "#dc2626";
+    const label = connected ? "Connected" : "Disconnected";
+    this._set(
+      "dash-connection",
+      `<span class="inline-flex items-center gap-2"><span style="width:9px;height:9px;border-radius:9999px;background:${dot};display:inline-block"></span>${label}</span>`
+    );
+    const details = engine.connection_details || {};
+    const hostPort =
+      details.host && details.port ? `${details.host}:${details.port}` : "TWS/Gateway";
+    this._set(
+      "dash-connection-sub",
+      `${hostPort} · Engine ${running ? "running" : "idle"}`
+    );
+  },
+
+  _renderRules(rules) {
+    if (!Array.isArray(rules)) {
+      this._set("dash-rules", '<span class="text-slate-400">—</span>');
+      return;
+    }
+    const custom = rules.filter((r) => !r.is_system).length;
+    this._set("dash-rules", String(rules.length));
+    this._set(
+      "dash-rules-sub",
+      `${custom} custom · ${rules.length - custom} system`
+    );
+  },
+
+  _renderUniverses(universes) {
+    const list = Array.isArray(universes)
+      ? universes
+      : universes && Array.isArray(universes.universes)
+        ? universes.universes
+        : null;
+    if (!list) {
+      this._set("dash-universes", '<span class="text-slate-400">—</span>');
+      return;
+    }
+    const tickers = list.reduce(
+      (sum, u) => sum + (Array.isArray(u.tickers) ? u.tickers.length : u.ticker_count || 0),
+      0
+    );
+    this._set("dash-universes", String(list.length));
+    this._set(
+      "dash-universes-sub",
+      tickers ? `${tickers} tickers total` : "&nbsp;"
+    );
+  },
+
+  _renderData(summary) {
+    if (!summary) {
+      this._set("dash-data", '<span class="text-slate-400">—</span>');
+      return;
+    }
+    const symbols = summary.symbol_count || 0;
+    this._set(
+      "dash-data",
+      symbols ? `${symbols} symbols` : '<span class="text-slate-400">Empty</span>'
+    );
+    const parts = [];
+    if (summary.total_candles) {
+      parts.push(`${Number(summary.total_candles).toLocaleString()} candles`);
+    }
+    if (summary.last_updated) {
+      parts.push(`updated ${this._fmtDate(summary.last_updated)}`);
+    }
+    this._set("dash-data-sub", parts.length ? parts.join(" · ") : "No cached data yet");
+  },
+
+  _renderRecentBacktests(runs) {
+    const el = document.getElementById("dash-recent-backtests");
+    if (!el) return;
+    if (!Array.isArray(runs) || runs.length === 0) {
+      el.innerHTML =
+        '<p class="text-slate-500">No backtests yet. Open Backtesting to run one.</p>';
+      return;
+    }
+    el.innerHTML = runs
+      .slice(0, 5)
+      .map((run) => {
+        const cfg = run.config || {};
+        const summary = run.summary || {};
+        const useRealized =
+          cfg.exit_strategy && cfg.exit_strategy !== "holding_period";
+        const m =
+          (useRealized ? summary.realized : summary.final) ||
+          summary.final ||
+          summary.realized ||
+          {};
+        const mode = cfg.mode || run.mode || "run";
+        const timeframe = cfg.timeframe || run.timeframe || "";
+        const title = this._escape(
+          `${mode.charAt(0).toUpperCase() + mode.slice(1)}${timeframe ? ` · ${timeframe}` : ""}${cfg.n_steps != null ? ` · T+${cfg.n_steps}` : ""}`
+        );
+        const ret = Number(m.total_return_pct);
+        const retClass =
+          ret > 0 ? "text-emerald-700" : ret < 0 ? "text-rose-700" : "text-slate-500";
+        const retText =
+          m.total_return_pct == null || isNaN(ret)
+            ? "—"
+            : `${ret > 0 ? "+" : ""}${ret.toFixed(2)}%`;
+        const trades = run.row_count != null ? run.row_count : 0;
+        return `
+          <div class="flex items-center justify-between py-2.5 border-b border-slate-100 last:border-0">
+            <div class="min-w-0">
+              <div class="font-medium text-slate-800 truncate">${title}</div>
+              <div class="text-xs text-slate-500 truncate">${trades} trades</div>
+            </div>
+            <div class="text-right whitespace-nowrap ml-3">
+              <div class="text-sm font-bold ${retClass}">${retText}</div>
+              <div class="text-xs text-slate-400">${this._fmtDate(run.created_at)}</div>
+            </div>
+          </div>`;
+      })
+      .join("");
+  },
+
+  _escape(str) {
+    return String(str == null ? "" : str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  },
+
+  _fmtDate(value) {
+    if (!value) return "—";
+    const d = new Date(value);
+    if (isNaN(d.getTime())) return String(value);
+    return d.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  },
+};
 
 class SignalGenApp {
   constructor() {
@@ -485,6 +713,11 @@ class SignalGenApp {
       if (initialConditionRow) {
         this.attachConditionRowListeners(initialConditionRow);
         this.syncConditionRowForOperator(initialConditionRow);
+      }
+
+      // Render the default landing view (Dashboard) now that data is loaded.
+      if (currentView === "dashboard" && typeof dashboardUI !== "undefined") {
+        dashboardUI.render();
       }
 
       console.log("SignalGen application initialized successfully");

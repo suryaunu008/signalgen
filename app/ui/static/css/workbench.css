@@ -232,13 +232,29 @@ button[class*="bg-gray-5"]:hover {
     0 1px 2px rgba(0, 0, 0, 0.18);
 }
 
+aside .tab-button {
+  position: relative;
+}
+
 aside .tab-button.active {
   background: #fafafa !important;
+  /* Left accent bar so the current view reads at a glance. */
+  box-shadow: inset 3px 0 0 0 #38bdf8 !important;
 }
 
 aside .tab-button:not(.active):hover {
   background-color: var(--sidebar-muted);
   color: #fafafa;
+}
+
+/* Sidebar section headers (Config / Analysis / Live) */
+.nav-group-label {
+  padding: 0.85rem 0.75rem 0.2rem;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #64748b;
 }
 
 header .tab-button {

@@ -1048,9 +1048,58 @@ class SQLiteRepository:
             # Count cached price candles
             cursor.execute('SELECT COUNT(*) FROM price_candles')
             stats['total_price_candles'] = cursor.fetchone()[0]
-            
+
             return stats
-    
+
+    def get_price_cache_summary(self) -> Dict[str, Any]:
+        """Summarize the cached OHLCV data for the Dashboard.
+
+        Returns aggregate coverage (distinct symbols, candle count, timestamp
+        range, last refresh) plus a per-data_source breakdown. Cheap: single
+        pass of aggregates, no per-candle materialization.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT
+                    COUNT(*)                       AS total_candles,
+                    COUNT(DISTINCT symbol)         AS symbol_count,
+                    MIN(timestamp)                 AS earliest,
+                    MAX(timestamp)                 AS latest,
+                    MAX(updated_at)                AS last_updated
+                FROM price_candles
+            ''')
+            row = cursor.fetchone()
+            summary: Dict[str, Any] = {
+                'total_candles': row['total_candles'] or 0,
+                'symbol_count': row['symbol_count'] or 0,
+                'earliest': row['earliest'],
+                'latest': row['latest'],
+                'last_updated': row['last_updated'],
+                'sources': [],
+            }
+
+            cursor.execute('''
+                SELECT
+                    data_source,
+                    COUNT(DISTINCT symbol) AS symbols,
+                    COUNT(*)               AS candles,
+                    MAX(updated_at)        AS last_updated
+                FROM price_candles
+                GROUP BY data_source
+                ORDER BY candles DESC
+            ''')
+            for src in cursor.fetchall():
+                summary['sources'].append({
+                    'data_source': src['data_source'],
+                    'symbols': src['symbols'],
+                    'candles': src['candles'],
+                    'last_updated': src['last_updated'],
+                })
+
+            return summary
+
     # Backtesting operations
     def create_backtest_run(
         self,
@@ -1280,7 +1329,15 @@ class SQLiteRepository:
             run['config'] = json.loads(run['config']) if run['config'] else {}
             run['summary'] = json.loads(run['summary']) if run['summary'] else {}
             return run
-    
+
+    def delete_backtest_screen_run(self, run_id: int) -> bool:
+        """Delete a backtest screen run. Returns True if a row was removed."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM backtest_screen_runs WHERE id = ?', (run_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+
     # Ticker Universe operations
     def create_ticker_universe(
         self,
