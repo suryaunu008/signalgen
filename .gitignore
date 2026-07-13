@@ -152,6 +152,9 @@ signalgen.log
 *.log
 reports/
 
+# Thesis/sprint docs kept local-only, not part of the running system
+docs/
+
 # Temporary files
 tmp/
 temp/

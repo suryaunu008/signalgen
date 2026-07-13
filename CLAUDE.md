@@ -10,7 +10,7 @@ SignalGen is a Windows desktop app (PyWebView + FastAPI + SQLite) for generating
 - **Backtesting**: replays historical candles (IBKR or Yahoo) through the same `RuleEngine`/`IndicatorEngine` path as live trading, so backtest and live logic never diverge.
 - **Swing screening**: on-demand batch screening of a ticker universe using cached Yahoo data, no live loop.
 
-This repo is also a TA (Tugas Akhir / thesis) project — `docs/` contains dated sprint reports and `BAB_3`/`BAB_4` Indonesian thesis chapters. Treat those as historical/academic reference, not living documentation.
+This repo is also a TA (Tugas Akhir / thesis) project — `docs/` contains dated sprint reports and `BAB_3`/`BAB_4` Indonesian thesis chapters. Treat those as historical/academic reference, not living documentation. `docs/` is gitignored (local-only, not version-controlled) since it's thesis material rather than part of the running system.
 
 ## Commands
 
